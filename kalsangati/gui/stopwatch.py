@@ -49,10 +49,12 @@ class StopwatchWidget(QWidget):
         self._current_activity: Optional[str] = None
 
         self.setWindowTitle("Kālsangati Stopwatch")
-        self.setWindowFlags(
-            Qt.WindowType.WindowStaysOnTopHint
-            | Qt.WindowType.Tool
-        )
+        # Normal top-level window. Qt.Tool + WindowStaysOnTopHint had
+        # visibility issues on Pop!_OS/Wayland (window constructed at
+        # (0,0) under the main window). Falling back to a standard
+        # window until the stopwatch moves inline in Phase 2.
+        self.setWindowFlags(Qt.WindowType.Window)
+        self.move(300, 300)  # visible starting position, not (0,0)
         self.setFixedWidth(320)
         self._build_ui()
 
