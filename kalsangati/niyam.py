@@ -149,7 +149,7 @@ def get_all(conn: sqlite3.Connection) -> list[Niyam]:
         List of Niyam instances.
     """
     rows = conn.execute(
-        "SELECT * FROM niyam ORDER BY created_at DESC"
+        "SELECT * FROM niyam ORDER BY id DESC"
     ).fetchall()
     return [_row_to_niyam(r) for r in rows]
 
