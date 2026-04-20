@@ -173,11 +173,15 @@ class MainWindow(QMainWindow):
             logger.exception("CSV import failed")
 
     def _toggle_stopwatch(self) -> None:
+        # print(f"[DEBUG] toggle_stopwatch called, visible={self._stopwatch.isVisible()}")
         if self._stopwatch.isVisible():
             self._stopwatch.hide()
         else:
             self._stopwatch.show()
             self._stopwatch.raise_()
+            self._stopwatch.activateWindow()  # try to force focus
+            # print(f"[DEBUG] after show, visible={self._stopwatch.isVisible()}, geometry={self._stopwatch.geometry()}")
+
 
     def _on_auto_refresh(self) -> None:
         self._dashboard.refresh()

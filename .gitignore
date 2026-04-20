@@ -1,0 +1,155 @@
+# ─────────────────────────────────────────────────────────────────────────
+# Kālsangati — .gitignore
+# ─────────────────────────────────────────────────────────────────────────
+
+# ── Python ──────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.pyd
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+pip-wheel-metadata/
+MANIFEST
+wheels/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# ── Virtual environments ────────────────────────────────────────────────
+# Conda envs are typically outside the repo, but catch any in-repo envs too
+.venv/
+venv/
+env/
+ENV/
+.env/
+.conda/
+
+# ── Testing & coverage ──────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.cache/
+.tox/
+.nox/
+.hypothesis/
+
+# ── Type checking & linting ─────────────────────────────────────────────
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.ruff_cache/
+.pytype/
+
+# ── Jupyter / IPython ───────────────────────────────────────────────────
+.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ── IDEs & editors ──────────────────────────────────────────────────────
+# VS Code — keep shared settings under .vscode/ if you commit any;
+# blanket-ignore everything else.
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/launch.json
+# PyCharm / IntelliJ
+.idea/
+*.iml
+# Sublime
+*.sublime-project
+*.sublime-workspace
+# Vim / Emacs
+*.swp
+*.swo
+*~
+\#*\#
+.\#*
+
+# ── OS clutter ──────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+.Trash-*
+
+# ── Kālsangati-specific ─────────────────────────────────────────────────
+# The app's data directory (local SQLite DB + logs + WAL).  NEVER commit.
+.kalsangati/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# User data copies / backups placed alongside repo
+kalsangati-backup*.db
+*.backup
+*.bak
+
+# Ad-hoc scratch / exports the maintainer may create during development
+scratch/
+tmp/
+out/
+exports/
+
+# User's own CSV exports / private data (the data/ folder has sample CSVs
+# that ARE committed; add explicit patterns here if private files land there)
+data/private*
+data/real*.csv
+data/my*.csv
+
+# Unshare / sandbox directories seen in the repo
+unshare/
+
+# ── Build artifacts (for when packaging lands in Phase 3) ───────────────
+*.spec
+PyInstaller/
+pyinstaller/
+.eggs/
+.installer/
+
+# ── Logs ────────────────────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Secrets / local config ──────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+secrets/
+*.secret
+*.key
+*.pem
+
+# Shared-secret token file that will land in Phase 2 when FastAPI is introduced
+token
+*.token
+
+# ── Frontend (for when Phase 2 lands) ───────────────────────────────────
+# Pre-emptively ignoring common Node artifacts so nothing slips in.
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/build/
+frontend/.vite/
+frontend/.cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log
+package-lock.json.bak
+
+# ── Ephemeral editor / AI-assistant scratch ─────────────────────────────
+.claude/
+.cursor/
+.aider*

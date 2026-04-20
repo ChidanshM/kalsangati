@@ -44,6 +44,7 @@ from kalsangati.niyam import (
     get_by_id,
     rename,
     set_active,
+    time_str_to_minutes,
     update_blocks,
 )
 
@@ -277,11 +278,16 @@ class NiyamEditor(QWidget):
                     # Close previous block
                     if current_activity and start_row is not None:
                         end_row = row
+                        end_slot = (
+                            HALF_HOURS[end_row]
+                            if end_row < len(HALF_HOURS)
+                            else "24:00"
+                        )
                         blocks[day].append(
                             TimeBlock(
                                 activity=current_activity,
-                                start=HALF_HOURS[start_row],
-                                end=HALF_HOURS[end_row] if end_row < len(HALF_HOURS) else "24:00",
+                                start_min=time_str_to_minutes(HALF_HOURS[start_row]),
+                                end_min=time_str_to_minutes(end_slot),
                                 duration_h=(end_row - start_row) * 0.5,
                             )
                         )
@@ -294,8 +300,8 @@ class NiyamEditor(QWidget):
                 blocks[day].append(
                     TimeBlock(
                         activity=current_activity,
-                        start=HALF_HOURS[start_row],
-                        end="24:00",
+                        start_min=time_str_to_minutes(HALF_HOURS[start_row]),
+                        end_min=time_str_to_minutes("24:00"),
                         duration_h=(end_row - start_row) * 0.5,
                     )
                 )

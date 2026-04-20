@@ -11,7 +11,7 @@ import logging
 import sqlite3
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Callable, Optional
 
 from kalsangati.db import get_setting
@@ -76,12 +76,12 @@ def _next_blocks(
     day_names = ("monday", "tuesday", "wednesday", "thursday",
                  "friday", "saturday", "sunday")
     day = day_names[now.weekday()]
-    current_time = now.strftime("%H:%M")
-    lead_time = (now + timedelta(minutes=lead_minutes)).strftime("%H:%M")
+    current_min = now.hour * 60 + now.minute
+    lead_min = current_min + lead_minutes
 
     results: list[TimeBlock] = []
     for block in niyam.blocks_for_day(day):
-        if current_time <= block.start <= lead_time:
+        if current_min <= block.start_min <= lead_min:
             results.append(block)
     return results
 

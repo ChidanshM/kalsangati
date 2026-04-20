@@ -399,7 +399,7 @@ def check_block_alignment(
     day_names = ("monday", "tuesday", "wednesday", "thursday",
                  "friday", "saturday", "sunday")
     current_day = day_names[now.weekday()]
-    current_time = now.strftime("%H:%M")
+    current_min = now.hour * 60 + now.minute
 
     niyam = get_active(conn)
     if niyam is None:
@@ -407,7 +407,7 @@ def check_block_alignment(
 
     # Check current block
     for block in niyam.blocks_for_day(current_day):
-        if block.activity == activity and block.start <= current_time < block.end:
+        if block.activity == activity and block.start_min <= current_min < block.end_min:
             return {"aligned": True, "next_block_day": "", "next_block_time": ""}
 
     # Find next block for this activity
@@ -416,12 +416,12 @@ def check_block_alignment(
         for block in niyam.blocks_for_day(check_day):
             if block.activity != activity:
                 continue
-            if offset == 0 and block.start <= current_time:
+            if offset == 0 and block.start_min <= current_min:
                 continue  # already past this block today
             return {
                 "aligned": False,
                 "next_block_day": check_day.capitalize(),
-                "next_block_time": block.start,
+                "next_block_time": block.start,  # HH:MM string for display
             }
 
     return {"aligned": False, "next_block_day": "None", "next_block_time": ""}
