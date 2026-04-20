@@ -90,8 +90,8 @@ class TestClassification:
 
         # Create and activate a Niyam with matching blocks
         blocks = {
-            "monday": [TimeBlock("01-02-el", "09:00", "12:00", 3.0)],
-            "tuesday": [TimeBlock("01-02-el", "09:00", "12:00", 3.0)],
+            "monday": [TimeBlock("01-02-el", 540, 720, 3.0)],   # 09:00=540, 12:00=720
+            "tuesday": [TimeBlock("01-02-el", 540, 720, 3.0)],
         }
         n = create_niyam(conn, "Test", blocks, set_active=True)
 

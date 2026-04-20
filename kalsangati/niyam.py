@@ -2,16 +2,20 @@
 
 A Niyam is a named weekly layout (e.g. "Spring 26", "Exam Week") stored as
 a JSON blob of time blocks.  One Niyam is marked active at a time.
+
+Time storage convention (since schema version 2): all block times are
+stored as ``minutes-since-midnight`` integers.  ``"14:09"`` on the wire
+becomes ``849`` in ``TimeBlock.start_min``.  Display-side formatting is
+available via :func:`format_time`.  The legacy ``"HH:MM"`` string form
+is accepted on read (for migration and CSV import) and auto-converted.
 """
 
 from __future__ import annotations
 
 import csv
-import json
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
-from io import StringIO
 from pathlib import Path
 from typing import Any, Optional
 
@@ -19,35 +23,136 @@ from kalsangati.db import parse_time_blocks, serialize_time_blocks, transaction
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 
+MINUTES_PER_DAY = 24 * 60
+
+
+# ── Time helpers ────────────────────────────────────────────────────────
+
+
+def time_str_to_minutes(time_str: str) -> int:
+    """Convert ``"HH:MM"`` or ``"HH:MM:SS"`` to minutes-since-midnight.
+
+    ``"24:00"`` is accepted and yields ``1440`` (end-of-day sentinel).
+
+    Args:
+        time_str: A zero-padded time string in ``HH:MM`` or ``HH:MM:SS`` form.
+
+    Returns:
+        Minutes since midnight as an integer in the range ``0..1440``.
+
+    Raises:
+        ValueError: If the string is malformed or out of range.
+    """
+    s = time_str.strip()
+    parts = s.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(f"Invalid time string: {time_str!r}")
+    try:
+        hours = int(parts[0])
+        minutes = int(parts[1])
+    except ValueError as exc:
+        raise ValueError(f"Invalid time string: {time_str!r}") from exc
+    # Seconds component is permitted but ignored — kalrekha writes "HH:MM:SS"
+    # and we only care about minute granularity for block comparison.
+    if not (0 <= hours <= 24) or not (0 <= minutes < 60):
+        raise ValueError(f"Time out of range: {time_str!r}")
+    total = hours * 60 + minutes
+    if total > MINUTES_PER_DAY:
+        raise ValueError(f"Time out of range: {time_str!r}")
+    return total
+
+
+def format_time(minutes: int) -> str:
+    """Format minutes-since-midnight as ``"HH:MM"``.
+
+    ``1440`` renders as ``"24:00"`` (end-of-day sentinel).
+
+    Args:
+        minutes: Minutes since midnight, ``0..1440`` inclusive.
+
+    Returns:
+        Zero-padded ``"HH:MM"`` string.
+
+    Raises:
+        ValueError: If *minutes* is outside ``0..1440``.
+    """
+    if not (0 <= minutes <= MINUTES_PER_DAY):
+        raise ValueError(f"Minutes out of range: {minutes}")
+    if minutes == MINUTES_PER_DAY:
+        return "24:00"
+    h, m = divmod(minutes, 60)
+    return f"{h:02d}:{m:02d}"
+
 
 # ── Data classes ────────────────────────────────────────────────────────
 
 
 @dataclass(slots=True)
 class TimeBlock:
-    """A single scheduled block within a day."""
+    """A single scheduled block within a day.
+
+    Times are stored as minutes-since-midnight integers (schema v2+).
+    Use :attr:`start` / :attr:`end` to read the ``"HH:MM"`` string form.
+    """
 
     activity: str
-    start: str       # "HH:MM"
-    end: str         # "HH:MM"
+    start_min: int
+    end_min: int
     duration_h: float
 
+    # ── Display accessors (string form, derived) ────────────────────────
+
+    @property
+    def start(self) -> str:
+        """Block start as ``"HH:MM"`` string (derived from :attr:`start_min`)."""
+        return format_time(self.start_min)
+
+    @property
+    def end(self) -> str:
+        """Block end as ``"HH:MM"`` string (derived from :attr:`end_min`)."""
+        return format_time(self.end_min)
+
+    # ── Derived helpers ─────────────────────────────────────────────────
+
+    @property
+    def duration_min(self) -> int:
+        """Block duration in minutes."""
+        return self.end_min - self.start_min
+
+    def contains_minute(self, minute_of_day: int) -> bool:
+        """Return True if *minute_of_day* falls within ``[start_min, end_min)``."""
+        return self.start_min <= minute_of_day < self.end_min
+
+    # ── Serialization ───────────────────────────────────────────────────
+
     def to_dict(self) -> dict[str, Any]:
-        """Serialize to a plain dict for JSON storage."""
+        """Serialize to a plain dict for JSON storage (v2+ int format)."""
         return {
             "activity": self.activity,
-            "start": self.start,
-            "end": self.end,
+            "start_min": self.start_min,
+            "end_min": self.end_min,
             "duration_h": self.duration_h,
         }
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> TimeBlock:
-        """Construct from a stored dict."""
+        """Construct from a stored dict.
+
+        Accepts both v2 format (``start_min`` / ``end_min`` ints) and the
+        legacy v1 format (``start`` / ``end`` ``"HH:MM"`` strings).  The
+        latter path exists primarily for the in-memory migration helper
+        and for importing CSVs.
+        """
+        if "start_min" in d and "end_min" in d:
+            start_min = int(d["start_min"])
+            end_min = int(d["end_min"])
+        else:
+            start_min = time_str_to_minutes(d["start"])
+            end_min = time_str_to_minutes(d["end"])
         return cls(
             activity=d["activity"],
-            start=d["start"],
-            end=d["end"],
+            start_min=start_min,
+            end_min=end_min,
             duration_h=float(d["duration_h"]),
         )
 
@@ -99,13 +204,29 @@ class Niyam:
 
         Args:
             day: Lowercase day name.
-            time_str: Time in "HH:MM" format.
+            time_str: Time in ``"HH:MM"`` or ``"HH:MM:SS"`` format.
+
+        Returns:
+            The matching TimeBlock, or None.
+        """
+        minute = time_str_to_minutes(time_str)
+        for block in self.blocks_for_day(day):
+            if block.contains_minute(minute):
+                return block
+        return None
+
+    def block_at_minute(self, day: str, minute_of_day: int) -> Optional[TimeBlock]:
+        """Find the block covering a given minute-of-day on a day.
+
+        Args:
+            day: Lowercase day name.
+            minute_of_day: Minutes since midnight.
 
         Returns:
             The matching TimeBlock, or None.
         """
         for block in self.blocks_for_day(day):
-            if block.start <= time_str < block.end:
+            if block.contains_minute(minute_of_day):
                 return block
         return None
 
@@ -315,7 +436,9 @@ def import_from_csv(
 ) -> Niyam:
     """Import a Niyam from a structured CSV file.
 
-    Expected CSV columns: ``day, activity, start, end, duration_h``
+    Expected CSV columns: ``day, activity, start, end, duration_h``.
+    ``start`` and ``end`` are ``"HH:MM"`` strings in the CSV and are
+    converted to minutes-since-midnight ints on load.
 
     Args:
         conn: Database connection.
@@ -338,15 +461,15 @@ def import_from_csv(
             blocks[day].append(
                 TimeBlock(
                     activity=row["activity"].strip(),
-                    start=row["start"].strip(),
-                    end=row["end"].strip(),
+                    start_min=time_str_to_minutes(row["start"].strip()),
+                    end_min=time_str_to_minutes(row["end"].strip()),
                     duration_h=float(row["duration_h"].strip()),
                 )
             )
 
     # Sort each day's blocks by start time
     for day in blocks:
-        blocks[day].sort(key=lambda b: b.start)
+        blocks[day].sort(key=lambda b: b.start_min)
 
     return create(conn, name, blocks, set_active=set_active_flag)
 

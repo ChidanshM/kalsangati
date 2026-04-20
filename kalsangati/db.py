@@ -16,19 +16,25 @@ from typing import Any, Generator, Optional
 # Default DB lives next to the package in the user's data dir.
 _DEFAULT_DB_PATH = Path.home() / ".kalsangati" / "kalsangati.db"
 
-SCHEMA_VERSION = 1
+# Schema version.  Bump when a migration is added.
+# v1: initial schema.
+# v2: Niyam time_blocks migrated from "HH:MM" strings to minutes-since-
+#     midnight integers (see _migrate_v2_time_blocks_to_minutes).
+SCHEMA_VERSION = 2
 
 # ── Schema DDL ──────────────────────────────────────────────────────────
 
 _SCHEMA_SQL = """\
--- Blueprint schedules (document-style time_blocks)
+-- Blueprint schedules (document-style time_blocks).
+-- Since v2 each block stores start_min / end_min as int minutes-since-midnight.
 CREATE TABLE IF NOT EXISTS niyam (
     id          INTEGER PRIMARY KEY,
     name        TEXT NOT NULL,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     is_active   INTEGER DEFAULT 0,
-    time_blocks TEXT  -- JSON: {"monday": [{"activity": "...", "start": "09:00",
-                      --   "end": "11:00", "duration_h": 2.0}, ...], ...}
+    time_blocks TEXT  -- JSON: {"monday": [{"activity": "...",
+                      --   "start_min": 540, "end_min": 660,
+                      --   "duration_h": 2.0}, ...], ...}
 );
 
 -- Session log (actual lived time — Kālrekhā)
@@ -140,14 +146,6 @@ _DEFAULT_SETTINGS: dict[str, str] = {
     "week_start_day": "monday",
 }
 
-# ── Migrations ──────────────────────────────────────────────────────────
-# Each key is a version number; value is a list of SQL statements.
-# Migrations run forward-only in order.
-
-_MIGRATIONS: dict[int, list[str]] = {
-    # Version 1 is the initial schema — handled by _SCHEMA_SQL.
-}
-
 
 # ── Connection helpers ──────────────────────────────────────────────────
 
@@ -216,6 +214,87 @@ def transaction(
         raise
 
 
+# ── Migrations ──────────────────────────────────────────────────────────
+
+
+def _time_str_to_minutes(time_str: str) -> int:
+    """Local HH:MM → minutes helper (avoids circular import with niyam.py)."""
+    s = time_str.strip()
+    parts = s.split(":")
+    if len(parts) not in (2, 3):
+        raise ValueError(f"Invalid time string: {time_str!r}")
+    hours = int(parts[0])
+    minutes = int(parts[1])
+    if not (0 <= hours <= 24) or not (0 <= minutes < 60):
+        raise ValueError(f"Time out of range: {time_str!r}")
+    total = hours * 60 + minutes
+    if total > 24 * 60:
+        raise ValueError(f"Time out of range: {time_str!r}")
+    return total
+
+
+def _migrate_v2_time_blocks_to_minutes(conn: sqlite3.Connection) -> None:
+    """Rewrite every niyam.time_blocks JSON to use minutes-since-midnight.
+
+    Old format (v1):
+        {"monday": [{"activity": "...", "start": "09:00",
+                     "end": "11:00", "duration_h": 2.0}, ...]}
+
+    New format (v2):
+        {"monday": [{"activity": "...", "start_min": 540,
+                     "end_min": 660, "duration_h": 2.0}, ...]}
+
+    Rows that already look v2 (contain ``start_min``) are left alone — this
+    makes the migration idempotent and safe to replay.
+    """
+    rows = conn.execute("SELECT id, time_blocks FROM niyam").fetchall()
+    for row in rows:
+        raw = row["time_blocks"]
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except (ValueError, TypeError):
+            continue
+
+        changed = False
+        for day, block_list in data.items():
+            if not isinstance(block_list, list):
+                continue
+            for block in block_list:
+                if not isinstance(block, dict):
+                    continue
+                if "start_min" in block and "end_min" in block:
+                    continue  # already migrated
+                if "start" not in block or "end" not in block:
+                    continue  # malformed, skip
+                try:
+                    block["start_min"] = _time_str_to_minutes(block["start"])
+                    block["end_min"] = _time_str_to_minutes(block["end"])
+                except (ValueError, TypeError):
+                    # Skip malformed block but keep going on the rest.
+                    continue
+                # Remove legacy fields so the stored JSON is clean v2.
+                block.pop("start", None)
+                block.pop("end", None)
+                changed = True
+
+        if changed:
+            new_raw = json.dumps(data, separators=(",", ":"))
+            conn.execute(
+                "UPDATE niyam SET time_blocks = ? WHERE id = ?",
+                (new_raw, row["id"]),
+            )
+
+
+# Registry of version → callable.  Callables take the connection and
+# perform the migration under the shared transaction handler.
+_MIGRATION_FUNCS: dict[int, Any] = {
+    # Version 1 is the initial schema; no migration function needed.
+    2: _migrate_v2_time_blocks_to_minutes,
+}
+
+
 # ── Initialization & migration ──────────────────────────────────────────
 
 
@@ -231,14 +310,24 @@ def _current_version(conn: sqlite3.Connection) -> int:
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    """Run any unapplied migrations in order."""
+    """Run any unapplied migrations in order, up to SCHEMA_VERSION."""
     current = _current_version(conn)
-    for version in sorted(_MIGRATIONS):
+
+    # v1 baseline: if nothing is recorded, mark schema v1 as applied
+    # (tables were just created by _SCHEMA_SQL).
+    if current < 1:
+        with transaction(conn) as cur:
+            cur.execute(
+                "INSERT INTO _migrations (version) VALUES (?)", (1,)
+            )
+        current = 1
+
+    for version in sorted(_MIGRATION_FUNCS):
         if version <= current:
             continue
+        fn = _MIGRATION_FUNCS[version]
         with transaction(conn) as cur:
-            for stmt in _MIGRATIONS[version]:
-                cur.execute(stmt)
+            fn(conn)
             cur.execute(
                 "INSERT INTO _migrations (version) VALUES (?)", (version,)
             )

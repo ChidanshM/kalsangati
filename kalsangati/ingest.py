@@ -386,7 +386,7 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
     Returns:
         Number of sessions classified.
     """
-    from kalsangati.niyam import get_active
+    from kalsangati.niyam import get_active, time_str_to_minutes
 
     active = get_active(conn)
     if active is None:
@@ -415,11 +415,18 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
         canonical = resolve_label(conn, session["project"])
         activity = canonical or session["project"]
 
+        # Parse the session start time (stored as "HH:MM:SS" text) into
+        # minutes-since-midnight for integer comparison against block bounds.
+        try:
+            session_start_min = time_str_to_minutes(session["start"])
+        except (ValueError, TypeError):
+            continue
+
         # Check if session start falls within any block for this activity
         is_planned = False
         for block in active.blocks_for_day(day):
             if block.activity == activity:
-                if block.start <= session["start"] < block.end:
+                if block.start_min <= session_start_min < block.end_min:
                     is_planned = True
                     break
 
