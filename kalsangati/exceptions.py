@@ -52,3 +52,22 @@ class InvalidSessionBoundsError(KalsangatiError):
     to commit a session with ``end_time <= start_time``; the check
     exists as a defensive invariant at the service boundary.
     """
+
+
+# ── Ingest errors ───────────────────────────────────────────────────────
+
+
+class IngestFileNotFoundError(KalsangatiError):
+    """Raised when the CSV path passed to the ingest service does not
+    exist on disk.
+
+    Wraps the stdlib ``FileNotFoundError`` into the domain hierarchy so
+    the presentation layer can catch it via ``KalsangatiError``.
+    """
+
+
+class IngestFormatError(KalsangatiError):
+    """Raised when a CSV file cannot be parsed — typically because
+    required columns (project, date, start, end) are missing from the
+    header row or the header row is absent entirely.
+    """

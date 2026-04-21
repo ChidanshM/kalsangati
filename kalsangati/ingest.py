@@ -375,9 +375,11 @@ def refresh_weekly_aggregates(
 def classify_sessions(conn: sqlite3.Connection) -> int:
     """Retroactively classify imported sessions as planned/unplanned.
 
-    Checks each unclassified kalrekha session against the active Niyam's
-    time_blocks.  A session is ``planned`` if it falls within a scheduled
-    block for the matching activity.
+    Checks each unclassified kalrekha session against the active Niyam
+    via :func:`kalsangati.niyam.is_session_unplanned_under` — the same
+    pure classifier used by the stopwatch commit service.  A session is
+    ``planned`` if it falls within a scheduled block for the matching
+    activity at its start time.
 
     Args:
         conn: Database connection.
@@ -385,7 +387,11 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
     Returns:
         Number of sessions classified.
     """
-    from kalsangati.niyam import get_active, time_str_to_minutes
+    from kalsangati.niyam import (
+        get_active,
+        is_session_unplanned_under,
+        time_str_to_minutes,
+    )
 
     active = get_active(conn)
     if active is None:
@@ -414,27 +420,19 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
         canonical = resolve_label(conn, session["project"])
         activity = canonical or session["project"]
 
-        # Parse the session start time (stored as "HH:MM:SS" text) into
-        # minutes-since-midnight for integer comparison against block bounds.
         try:
             session_start_min = time_str_to_minutes(session["start"])
         except (ValueError, TypeError):
             continue
 
-        # Check if session start falls within any block for this activity
-        is_planned = False
-        for block in active.blocks_for_day(day):
-            if (
-                block.activity == activity
-                and block.start_min <= session_start_min < block.end_min
-            ):
-                is_planned = True
-                break
+        unplanned = is_session_unplanned_under(
+            active, activity, day, session_start_min,
+        )
 
         conn.execute(
             "UPDATE kalrekha SET unplanned = ?, block_classified = 1 "
             "WHERE id = ?",
-            (0 if is_planned else 1, session["id"]),
+            (int(unplanned), session["id"]),
         )
         count += 1
 
