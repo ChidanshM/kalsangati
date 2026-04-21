@@ -270,7 +270,10 @@ class _NewTaskDialog(QDialog):
             self._project_combo.addItem(p.name, p.id)
         layout.addRow("Project:", self._project_combo)
 
-        buttons = QDialogButtonBox(
+        # PyQt5-stubs declares the bitwise-OR of StandardButton enum
+        # values as int, but QDialogButtonBox actually accepts it as
+        # StandardButtons.  Runtime is correct; type check is wrong.
+        buttons = QDialogButtonBox(  # type: ignore[call-overload]
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )

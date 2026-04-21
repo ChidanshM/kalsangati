@@ -95,7 +95,7 @@ class MainWindow(QMainWindow):
 
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
-        quit_action.triggered.connect(self.close)
+        quit_action.triggered.connect(self._on_quit)
         file_menu.addAction(quit_action)
 
         # View menu
@@ -157,7 +157,8 @@ class MainWindow(QMainWindow):
                 f"Imported {result['imported']} sessions, "
                 f"skipped {result['skipped']} duplicates."
             )
-            unrec = result.get("unrecognized", [])
+            unrec_raw = result.get("unrecognized", [])
+            unrec: list[str] = unrec_raw if isinstance(unrec_raw, list) else []
             if unrec:
                 msg += f"\n\nUnrecognized labels ({len(unrec)}):\n"
                 msg += "\n".join(f"  • {label}" for label in unrec[:20])
@@ -168,6 +169,10 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Import Error", str(e))
             logger.exception("CSV import failed")
+
+    def _on_quit(self) -> None:
+        """Quit action handler — discards close()'s bool return."""
+        self.close()
 
     def _toggle_stopwatch(self) -> None:
         if self._stopwatch.isVisible():

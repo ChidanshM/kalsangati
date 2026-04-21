@@ -19,7 +19,12 @@ from kalsangati.niyam import get_active
 
 @dataclass(slots=True)
 class Task:
-    """A task with scheduling metadata."""
+    """A task with scheduling metadata.
+
+    The four ``scheduled_*`` fields are either all None (backlog task)
+    or all populated (task placed on the weekly calendar).  The
+    all-or-nothing invariant is enforced by a DB-level CHECK.
+    """
 
     id: int
     title: str
@@ -27,12 +32,51 @@ class Task:
     canonical_activity: str
     estimated_hours: float | None
     due_date: str | None
-    status: str  # backlog | this_week | in_progress | done
+    status: str  # backlog | this_week | in_progress | on_hold | done
     week_assigned: str | None
     spilled_from: str | None
     override_reason: str | None
     notes: str | None
     created_at: str
+    scheduled_day: str | None
+    scheduled_start_min: int | None
+    scheduled_end_min: int | None
+    scheduled_week_start: str | None
+
+
+@dataclass(slots=True)
+class TaskEvent:
+    """A single lifecycle event for a task.
+
+    The ``scheduled_*`` fields are a snapshot of the task's schedule
+    at the moment the event was logged — not a foreign key to the
+    current task state.  This preserves history across later reschedules
+    and un-scheduling.
+    """
+
+    id: int
+    task_id: int
+    event_type: str
+    event_at: str
+    scheduled_day: str | None
+    scheduled_start_min: int | None
+    scheduled_end_min: int | None
+    notes: str | None
+
+
+# Valid values for ``TaskEvent.event_type``.  Kept as a frozenset in
+# application code rather than a DB CHECK so the set can grow without a
+# schema migration (see SKILL-state.md pitfall discussion, Unit 2).
+EVENT_TYPES: frozenset[str] = frozenset({
+    "created",
+    "assigned",
+    "reassigned",
+    "unscheduled",
+    "on_hold",
+    "resumed",
+    "ended",
+    "spilled",
+})
 
 
 @dataclass(slots=True)
@@ -76,6 +120,23 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         override_reason=row["override_reason"],
         notes=row["notes"],
         created_at=row["created_at"],
+        scheduled_day=row["scheduled_day"],
+        scheduled_start_min=row["scheduled_start_min"],
+        scheduled_end_min=row["scheduled_end_min"],
+        scheduled_week_start=row["scheduled_week_start"],
+    )
+
+
+def _row_to_event(row: sqlite3.Row) -> TaskEvent:
+    return TaskEvent(
+        id=row["id"],
+        task_id=row["task_id"],
+        event_type=row["event_type"],
+        event_at=row["event_at"],
+        scheduled_day=row["scheduled_day"],
+        scheduled_start_min=row["scheduled_start_min"],
+        scheduled_end_min=row["scheduled_end_min"],
+        notes=row["notes"],
     )
 
 
@@ -176,7 +237,19 @@ def create(
              due_date, status, week_assigned, notes, now),
         )
         tid = cur.lastrowid
-    return get_by_id(conn, tid)  # type: ignore[return-value]
+        assert tid is not None  # guaranteed after a successful INSERT
+        # Auto-log the ``created`` event in the same savepoint so the
+        # task row and its first history entry are atomic.  Snapshot
+        # columns are NULL: a freshly created task has no schedule.
+        cur.execute(
+            "INSERT INTO task_events "
+            "(task_id, event_type, event_at, notes) "
+            "VALUES (?, ?, ?, ?)",
+            (tid, "created", now, None),
+        )
+    result = get_by_id(conn, tid)
+    assert result is not None  # round-trip of the row we just inserted
+    return result
 
 
 def update(
@@ -195,6 +268,8 @@ def update(
         "title", "project_id", "canonical_activity", "estimated_hours",
         "due_date", "status", "week_assigned", "spilled_from",
         "override_reason", "notes",
+        "scheduled_day", "scheduled_start_min", "scheduled_end_min",
+        "scheduled_week_start",
     }
     fields: list[str] = []
     params: list[str | int | float | None] = []
@@ -234,6 +309,101 @@ def set_status(
         status: New status value.
     """
     update(conn, task_id, status=status)
+
+
+# ── Event history ───────────────────────────────────────────────────────
+
+
+def log_task_event(
+    conn: sqlite3.Connection,
+    task_id: int,
+    event_type: str,
+    *,
+    notes: str | None = None,
+) -> TaskEvent:
+    """Append a lifecycle event for a task.
+
+    Snapshots the task's current ``scheduled_*`` fields into the event
+    row so history survives later reschedules and un-scheduling.
+
+    Args:
+        conn: Database connection.
+        task_id: The task this event belongs to.
+        event_type: One of ``EVENT_TYPES``.  Raises ``ValueError``
+            otherwise.
+        notes: Optional free-text annotation.
+
+    Returns:
+        The newly created TaskEvent.
+
+    Raises:
+        ValueError: If ``event_type`` is not in ``EVENT_TYPES``.
+        sqlite3.IntegrityError: If ``task_id`` does not exist (FK
+            violation).
+    """
+    if event_type not in EVENT_TYPES:
+        raise ValueError(
+            f"Unknown event_type: {event_type!r}. "
+            f"Expected one of {sorted(EVENT_TYPES)}."
+        )
+
+    # Snapshot current schedule from the task row.  If the task does
+    # not exist, the INSERT below will fail cleanly on the FK.
+    row = conn.execute(
+        "SELECT scheduled_day, scheduled_start_min, scheduled_end_min "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    sched_day: str | None = row["scheduled_day"] if row else None
+    sched_start: int | None = row["scheduled_start_min"] if row else None
+    sched_end: int | None = row["scheduled_end_min"] if row else None
+
+    now = datetime.now().isoformat(sep=" ", timespec="seconds")
+    with transaction(conn) as cur:
+        cur.execute(
+            "INSERT INTO task_events "
+            "(task_id, event_type, event_at, "
+            " scheduled_day, scheduled_start_min, scheduled_end_min, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (task_id, event_type, now,
+             sched_day, sched_start, sched_end, notes),
+        )
+        event_id = cur.lastrowid
+    assert event_id is not None  # guaranteed after a successful INSERT
+
+    return TaskEvent(
+        id=event_id,
+        task_id=task_id,
+        event_type=event_type,
+        event_at=now,
+        scheduled_day=sched_day,
+        scheduled_start_min=sched_start,
+        scheduled_end_min=sched_end,
+        notes=notes,
+    )
+
+
+def get_task_events(
+    conn: sqlite3.Connection, task_id: int
+) -> list[TaskEvent]:
+    """Return all events for a task, oldest first.
+
+    Ties on ``event_at`` (same-second events) are broken by id so the
+    order matches insertion order.
+
+    Args:
+        conn: Database connection.
+        task_id: Task whose history to fetch.
+
+    Returns:
+        List of TaskEvent, chronological.
+    """
+    rows = conn.execute(
+        "SELECT * FROM task_events WHERE task_id = ? "
+        "ORDER BY event_at ASC, id ASC",
+        (task_id,),
+    ).fetchall()
+    return [_row_to_event(r) for r in rows]
 
 
 # ── Capacity ────────────────────────────────────────────────────────────

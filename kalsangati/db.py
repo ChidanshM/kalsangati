@@ -12,7 +12,7 @@ import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 # Default DB lives next to the package in the user's data dir.
 _DEFAULT_DB_PATH = Path.home() / ".kalsangati" / "kalsangati.db"
@@ -21,7 +21,11 @@ _DEFAULT_DB_PATH = Path.home() / ".kalsangati" / "kalsangati.db"
 # v1: initial schema.
 # v2: Niyam time_blocks migrated from "HH:MM" strings to minutes-since-
 #     midnight integers (see _migrate_v2_time_blocks_to_minutes).
-SCHEMA_VERSION = 2
+# v3: tasks gained scheduled_day / scheduled_start_min / scheduled_end_min /
+#     scheduled_week_start (all NULL for backlog tasks, all populated for
+#     scheduled tasks — enforced via CHECK).  Status enum gained 'on_hold'.
+#     New task_events history table (see _migrate_v3_task_schedule_and_events).
+SCHEMA_VERSION = 3
 
 # ── Schema DDL ──────────────────────────────────────────────────────────
 
@@ -89,20 +93,61 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 
 -- Tasks
+-- v3: added scheduled_day / scheduled_start_min / scheduled_end_min /
+--     scheduled_week_start (all NULL = backlog, all populated = scheduled);
+--     status enum gained 'on_hold'.
 CREATE TABLE IF NOT EXISTS tasks (
-    id                 INTEGER PRIMARY KEY,
-    title              TEXT NOT NULL,
-    project_id         INTEGER REFERENCES projects(id),
-    canonical_activity TEXT NOT NULL,
-    estimated_hours    REAL,
-    due_date           TEXT,
-    status             TEXT DEFAULT 'backlog'
-                       CHECK(status IN ('backlog','this_week','in_progress','done')),
-    week_assigned      TEXT,
-    spilled_from       TEXT,
-    override_reason    TEXT,
-    notes              TEXT,
-    created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+    id                   INTEGER PRIMARY KEY,
+    title                TEXT NOT NULL,
+    project_id           INTEGER REFERENCES projects(id),
+    canonical_activity   TEXT NOT NULL,
+    estimated_hours      REAL,
+    due_date             TEXT,
+    status               TEXT DEFAULT 'backlog'
+                         CHECK(status IN ('backlog','this_week',
+                                          'in_progress','on_hold','done')),
+    week_assigned        TEXT,
+    spilled_from         TEXT,
+    override_reason      TEXT,
+    notes                TEXT,
+    created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+    scheduled_day        TEXT,
+    scheduled_start_min  INTEGER,
+    scheduled_end_min    INTEGER,
+    scheduled_week_start TEXT,
+    CHECK (
+        (scheduled_day IS NULL
+         AND scheduled_start_min IS NULL
+         AND scheduled_end_min IS NULL
+         AND scheduled_week_start IS NULL)
+        OR
+        (scheduled_day IN ('monday','tuesday','wednesday','thursday',
+                           'friday','saturday','sunday')
+         AND scheduled_start_min IS NOT NULL
+         AND scheduled_start_min >= 0
+         AND scheduled_start_min < 1440
+         AND scheduled_end_min IS NOT NULL
+         AND scheduled_end_min > scheduled_start_min
+         AND scheduled_end_min <= 1440
+         AND scheduled_week_start IS NOT NULL)
+    )
+);
+
+-- Task event history (v3).  Append-only audit trail of task lifecycle
+-- events: created, assigned, reassigned, unscheduled, on_hold, resumed,
+-- ended, spilled.  scheduled_* columns are a snapshot of the task's
+-- schedule at the time of the event.  ON DELETE CASCADE: events vanish
+-- with their task.
+CREATE TABLE IF NOT EXISTS task_events (
+    id                  INTEGER PRIMARY KEY,
+    task_id             INTEGER NOT NULL
+                        REFERENCES tasks(id) ON DELETE CASCADE,
+    event_type          TEXT NOT NULL,
+    event_at            TEXT NOT NULL,
+    scheduled_day       TEXT,
+    scheduled_start_min INTEGER,
+    scheduled_end_min   INTEGER,
+    notes               TEXT
 );
 
 -- App settings (key-value)
@@ -135,6 +180,10 @@ CREATE INDEX IF NOT EXISTS idx_tasks_week
     ON tasks(week_assigned);
 CREATE INDEX IF NOT EXISTS idx_tasks_activity
     ON tasks(canonical_activity);
+CREATE INDEX IF NOT EXISTS idx_task_events_task_id
+    ON task_events(task_id);
+CREATE INDEX IF NOT EXISTS idx_task_events_event_at
+    ON task_events(event_at);
 """
 
 # ── Default settings ────────────────────────────────────────────────────
@@ -288,12 +337,136 @@ def _migrate_v2_time_blocks_to_minutes(conn: sqlite3.Connection) -> None:
             )
 
 
+def _migrate_v3_task_schedule_and_events(conn: sqlite3.Connection) -> None:
+    """Add scheduled_* columns + expanded status enum to tasks.
+
+    SQLite cannot ``ALTER TABLE ... ADD CHECK`` or change a column list
+    that participates in a CHECK constraint — so we do the standard
+    12-step table rebuild:
+
+    1. Create ``tasks_new`` with the v3 schema (new columns + new CHECK +
+       expanded status enum).
+    2. Copy all rows from ``tasks`` to ``tasks_new`` (legacy columns
+       only; new scheduled_* columns default to NULL).
+    3. Drop old ``tasks``.
+    4. Rename ``tasks_new`` → ``tasks``.
+    5. Recreate indexes (``idx_tasks_status`` / ``idx_tasks_week`` /
+       ``idx_tasks_activity``).
+
+    ``task_events`` is created by the top-level ``_SCHEMA_SQL`` via
+    ``CREATE TABLE IF NOT EXISTS``, so this migration does nothing for
+    it directly.
+
+    Idempotency: if ``tasks`` already has the ``scheduled_day`` column,
+    the rebuild is skipped.
+
+    FK safety: ``PRAGMA foreign_keys`` must be OFF during the rebuild —
+    otherwise any FK referencing ``tasks(id)`` (notably ``task_events``)
+    would fail on DROP TABLE.  The pragma toggle is handled one level up
+    in ``_apply_migrations`` because ``PRAGMA foreign_keys`` is a no-op
+    inside a transaction.  Row ids are preserved through the rebuild so
+    existing FK references remain valid once FK enforcement is restored.
+    """
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    if "scheduled_day" in cols:
+        return  # already v3
+
+    # IMPORTANT: use individual conn.execute() calls rather than
+    # conn.executescript().  executescript() issues an implicit COMMIT
+    # before running its body — which would dissolve the outer SAVEPOINT
+    # that _apply_migrations has opened around this migration.
+    # execute() with DDL under the default isolation_level leaves the
+    # savepoint intact.
+
+    conn.execute(
+        """
+        CREATE TABLE tasks_new (
+            id                   INTEGER PRIMARY KEY,
+            title                TEXT NOT NULL,
+            project_id           INTEGER REFERENCES projects(id),
+            canonical_activity   TEXT NOT NULL,
+            estimated_hours      REAL,
+            due_date             TEXT,
+            status               TEXT DEFAULT 'backlog'
+                                 CHECK(status IN ('backlog','this_week',
+                                                  'in_progress','on_hold',
+                                                  'done')),
+            week_assigned        TEXT,
+            spilled_from         TEXT,
+            override_reason      TEXT,
+            notes                TEXT,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            scheduled_day        TEXT,
+            scheduled_start_min  INTEGER,
+            scheduled_end_min    INTEGER,
+            scheduled_week_start TEXT,
+            CHECK (
+                (scheduled_day IS NULL
+                 AND scheduled_start_min IS NULL
+                 AND scheduled_end_min IS NULL
+                 AND scheduled_week_start IS NULL)
+                OR
+                (scheduled_day IN ('monday','tuesday','wednesday','thursday',
+                                   'friday','saturday','sunday')
+                 AND scheduled_start_min IS NOT NULL
+                 AND scheduled_start_min >= 0
+                 AND scheduled_start_min < 1440
+                 AND scheduled_end_min IS NOT NULL
+                 AND scheduled_end_min > scheduled_start_min
+                 AND scheduled_end_min <= 1440
+                 AND scheduled_week_start IS NOT NULL)
+            )
+        )
+        """
+    )
+
+    conn.execute(
+        """
+        INSERT INTO tasks_new (
+            id, title, project_id, canonical_activity, estimated_hours,
+            due_date, status, week_assigned, spilled_from,
+            override_reason, notes, created_at
+        )
+        SELECT
+            id, title, project_id, canonical_activity, estimated_hours,
+            due_date, status, week_assigned, spilled_from,
+            override_reason, notes, created_at
+        FROM tasks
+        """
+    )
+
+    conn.execute("DROP TABLE tasks")
+    conn.execute("ALTER TABLE tasks_new RENAME TO tasks")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_week ON tasks(week_assigned)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_activity "
+        "ON tasks(canonical_activity)"
+    )
+
+
 # Registry of version → callable.  Callables take the connection and
 # perform the migration under the shared transaction handler.
 _MIGRATION_FUNCS: dict[int, Any] = {
     # Version 1 is the initial schema; no migration function needed.
     2: _migrate_v2_time_blocks_to_minutes,
+    3: _migrate_v3_task_schedule_and_events,
 }
+
+# Migrations that require ``PRAGMA foreign_keys = OFF`` during execution
+# (typically ones that rebuild a FK-referenced table).  ``PRAGMA
+# foreign_keys`` is a no-op inside an open transaction, so the pragma
+# must be toggled at the connection level, outside the savepoint the
+# migration runs under.
+_MIGRATIONS_NEEDING_FK_OFF: frozenset[int] = frozenset({3})
 
 
 # ── Initialization & migration ──────────────────────────────────────────
@@ -327,11 +500,22 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
         if version <= current:
             continue
         fn = _MIGRATION_FUNCS[version]
-        with transaction(conn) as cur:
-            fn(conn)
-            cur.execute(
-                "INSERT INTO _migrations (version) VALUES (?)", (version,)
-            )
+        needs_fk_off = version in _MIGRATIONS_NEEDING_FK_OFF
+        # ``PRAGMA foreign_keys`` has no effect inside an open
+        # transaction, so toggle it here — outside the savepoint the
+        # migration will run under — and restore on exit whether the
+        # migration succeeds or raises.
+        if needs_fk_off:
+            conn.execute("PRAGMA foreign_keys=OFF")
+        try:
+            with transaction(conn) as cur:
+                fn(conn)
+                cur.execute(
+                    "INSERT INTO _migrations (version) VALUES (?)", (version,)
+                )
+        finally:
+            if needs_fk_off:
+                conn.execute("PRAGMA foreign_keys=ON")
 
 
 def _seed_defaults(conn: sqlite3.Connection) -> None:
@@ -416,7 +600,7 @@ def parse_time_blocks(raw: str | None) -> dict[str, list[dict[str, Any]]]:
     """
     if not raw:
         return {}
-    return json.loads(raw)
+    return cast(dict[str, list[dict[str, Any]]], json.loads(raw))
 
 
 def serialize_time_blocks(blocks: dict[str, list[dict[str, Any]]]) -> str:

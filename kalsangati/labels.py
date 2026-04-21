@@ -156,7 +156,9 @@ def add_mapping(
             "VALUES (?, ?)",
             (raw_label, canonical_label),
         )
-        return cur.lastrowid  # type: ignore[return-value]
+        new_id = cur.lastrowid
+    assert new_id is not None  # guaranteed after a successful INSERT
+    return new_id
 
 
 def update_mapping(
@@ -298,7 +300,9 @@ def add_group(
             "VALUES (?, ?, ?)",
             (canonical_label, parent_group, level),
         )
-        return cur.lastrowid  # type: ignore[return-value]
+        new_id = cur.lastrowid
+    assert new_id is not None  # guaranteed after a successful INSERT
+    return new_id
 
 
 def update_group(
