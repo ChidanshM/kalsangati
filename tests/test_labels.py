@@ -82,7 +82,7 @@ class TestUnrecognized:
 class TestLabelGroups:
     def test_add_with_auto_parent(self, conn: sqlite3.Connection) -> None:
         add_group(conn, "01")
-        gid = add_group(conn, "01-02")
+        add_group(conn, "01-02")
         groups = get_all_groups(conn)
         g = next(g for g in groups if g.canonical_label == "01-02")
         assert g.parent_group == "01"

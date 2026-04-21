@@ -11,7 +11,8 @@ from kalsangati.ingest import (
     refresh_weekly_aggregates,
 )
 from kalsangati.labels import add_mapping
-from kalsangati.niyam import TimeBlock, create as create_niyam, set_active
+from kalsangati.niyam import TimeBlock
+from kalsangati.niyam import create as create_niyam
 
 
 class TestIngestCsv:
@@ -93,7 +94,7 @@ class TestClassification:
             "monday": [TimeBlock("01-02-el", 540, 720, 3.0)],   # 09:00=540, 12:00=720
             "tuesday": [TimeBlock("01-02-el", 540, 720, 3.0)],
         }
-        n = create_niyam(conn, "Test", blocks, set_active=True)
+        create_niyam(conn, "Test", blocks, set_active=True)
 
         classified = classify_sessions(conn)
         assert classified > 0

@@ -10,11 +10,9 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Optional
 
 from kalsangati.db import get_setting, transaction
 from kalsangati.niyam import get_active
-
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -25,15 +23,15 @@ class Task:
 
     id: int
     title: str
-    project_id: Optional[int]
+    project_id: int | None
     canonical_activity: str
-    estimated_hours: Optional[float]
-    due_date: Optional[str]
+    estimated_hours: float | None
+    due_date: str | None
     status: str  # backlog | this_week | in_progress | done
-    week_assigned: Optional[str]
-    spilled_from: Optional[str]
-    override_reason: Optional[str]
-    notes: Optional[str]
+    week_assigned: str | None
+    spilled_from: str | None
+    override_reason: str | None
+    notes: str | None
     created_at: str
 
 
@@ -87,9 +85,9 @@ def _row_to_task(row: sqlite3.Row) -> Task:
 def get_all(
     conn: sqlite3.Connection,
     *,
-    status: Optional[str] = None,
-    activity: Optional[str] = None,
-    week: Optional[str] = None,
+    status: str | None = None,
+    activity: str | None = None,
+    week: str | None = None,
 ) -> list[Task]:
     """Query tasks with optional filters.
 
@@ -123,7 +121,7 @@ def get_all(
     return [_row_to_task(r) for r in rows]
 
 
-def get_by_id(conn: sqlite3.Connection, task_id: int) -> Optional[Task]:
+def get_by_id(conn: sqlite3.Connection, task_id: int) -> Task | None:
     """Fetch a task by primary key.
 
     Args:
@@ -144,12 +142,12 @@ def create(
     title: str,
     canonical_activity: str,
     *,
-    project_id: Optional[int] = None,
-    estimated_hours: Optional[float] = None,
-    due_date: Optional[str] = None,
+    project_id: int | None = None,
+    estimated_hours: float | None = None,
+    due_date: str | None = None,
     status: str = "backlog",
-    week_assigned: Optional[str] = None,
-    notes: Optional[str] = None,
+    week_assigned: str | None = None,
+    notes: str | None = None,
 ) -> Task:
     """Create a new task.
 
@@ -184,7 +182,7 @@ def create(
 def update(
     conn: sqlite3.Connection,
     task_id: int,
-    **kwargs: Optional[str | int | float],
+    **kwargs: str | int | float | None,
 ) -> None:
     """Update task fields.
 
@@ -244,7 +242,7 @@ def set_status(
 def capacity_for_activity(
     conn: sqlite3.Connection,
     activity: str,
-    week_start: Optional[str] = None,
+    week_start: str | None = None,
 ) -> CapacityInfo:
     """Compute capacity for an activity in a given week.
 
@@ -306,7 +304,7 @@ def capacity_for_activity(
 
 def all_capacities(
     conn: sqlite3.Connection,
-    week_start: Optional[str] = None,
+    week_start: str | None = None,
 ) -> list[CapacityInfo]:
     """Compute capacity for all activities with assigned tasks or Niyam hours.
 
@@ -380,7 +378,7 @@ def process_spillover(
 def check_block_alignment(
     conn: sqlite3.Connection,
     activity: str,
-    at_time: Optional[datetime] = None,
+    at_time: datetime | None = None,
 ) -> dict[str, str | bool]:
     """Check if starting work on an activity is within its Niyam block.
 
@@ -407,7 +405,8 @@ def check_block_alignment(
 
     # Check current block
     for block in niyam.blocks_for_day(current_day):
-        if block.activity == activity and block.start_min <= current_min < block.end_min:
+        if (block.activity == activity
+                and block.start_min <= current_min < block.end_min):
             return {"aligned": True, "next_block_day": "", "next_block_time": ""}
 
     # Find next block for this activity

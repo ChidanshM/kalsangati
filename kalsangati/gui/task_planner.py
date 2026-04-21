@@ -8,24 +8,19 @@ tasks under their natural blocks, floating tasks at bottom.
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
     QListWidgetItem,
-    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -38,13 +33,19 @@ from PyQt5.QtWidgets import (
 
 from kalsangati.projects import get_all as get_all_projects
 from kalsangati.tasks import (
-    CapacityInfo,
-    Task,
     all_capacities,
-    create as create_task,
-    delete as delete_task,
-    get_all as get_all_tasks,
     set_status,
+)
+from kalsangati.tasks import (
+    create as create_task,
+)
+from kalsangati.tasks import (
+    delete as delete_task,
+)
+from kalsangati.tasks import (
+    get_all as get_all_tasks,
+)
+from kalsangati.tasks import (
     update as update_task,
 )
 
@@ -241,7 +242,7 @@ class _NewTaskDialog(QDialog):
     """Dialog for creating a new task."""
 
     def __init__(
-        self, conn: sqlite3.Connection, parent: Optional[QWidget] = None
+        self, conn: sqlite3.Connection, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("New Task")

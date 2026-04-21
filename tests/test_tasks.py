@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import sqlite3
 
-from kalsangati.niyam import TimeBlock, create as create_niyam
 from kalsangati.tasks import (
-    capacity_for_activity,
     create,
     delete,
     get_all,

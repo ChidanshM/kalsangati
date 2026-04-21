@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections.abc import Generator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any
 
 # Default DB lives next to the package in the user's data dir.
 _DEFAULT_DB_PATH = Path.home() / ".kalsangati" / "kalsangati.db"
@@ -157,7 +158,7 @@ def _enable_wal(conn: sqlite3.Connection) -> None:
 
 
 def get_connection(
-    db_path: Optional[Path] = None,
+    db_path: Path | None = None,
     *,
     read_only: bool = False,
 ) -> sqlite3.Connection:
@@ -258,7 +259,7 @@ def _migrate_v2_time_blocks_to_minutes(conn: sqlite3.Connection) -> None:
             continue
 
         changed = False
-        for day, block_list in data.items():
+        for _day, block_list in data.items():
             if not isinstance(block_list, list):
                 continue
             for block in block_list:
@@ -345,7 +346,7 @@ def _seed_defaults(conn: sqlite3.Connection) -> None:
                 )
 
 
-def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
+def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     """Create or open the database, apply schema + migrations, seed defaults.
 
     This is the main entry point for all other modules.  Call once at
@@ -368,7 +369,7 @@ def init_db(db_path: Optional[Path] = None) -> sqlite3.Connection:
 # ── Settings helpers ────────────────────────────────────────────────────
 
 
-def get_setting(conn: sqlite3.Connection, key: str) -> Optional[str]:
+def get_setting(conn: sqlite3.Connection, key: str) -> str | None:
     """Read a single setting value by key.
 
     Args:
@@ -403,7 +404,7 @@ def set_setting(conn: sqlite3.Connection, key: str, value: str) -> None:
 # ── JSON helpers ────────────────────────────────────────────────────────
 
 
-def parse_time_blocks(raw: Optional[str]) -> dict[str, list[dict[str, Any]]]:
+def parse_time_blocks(raw: str | None) -> dict[str, list[dict[str, Any]]]:
     """Parse a Niyam time_blocks JSON column into a Python dict.
 
     Args:

@@ -9,12 +9,10 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
 
 from kalsangati.db import get_setting
-from kalsangati.labels import resolve_label, resolve_hierarchy
+from kalsangati.labels import resolve_hierarchy, resolve_label
 from kalsangati.niyam import Niyam, get_active, get_by_id
-
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -140,7 +138,7 @@ def build_vimarsha(
     conn: sqlite3.Connection,
     date_start: str,
     date_end: str,
-    niyam_id: Optional[int] = None,
+    niyam_id: int | None = None,
 ) -> VimarshaSummary:
     """Build the full three-layer Vimarśa report.
 
@@ -153,10 +151,9 @@ def build_vimarsha(
     Returns:
         A VimarshaSummary with granular rows, grouped rows, and flags.
     """
-    if niyam_id is not None:
-        niyam = get_by_id(conn, niyam_id)
-    else:
-        niyam = get_active(conn)
+    niyam = (
+        get_by_id(conn, niyam_id) if niyam_id is not None else get_active(conn)
+    )
 
     prescribed = _prescribed_map(niyam) if niyam else {}
     logged = _logged_split(conn, date_start, date_end)
@@ -214,7 +211,10 @@ def _detect_flags(
                 ReflectionFlag(
                     activity=row.activity,
                     flag_type="high_unplanned",
-                    signal=f"{row.unplanned_pct:.0f}% of work is outside scheduled blocks",
+                    signal=(
+                        f"{row.unplanned_pct:.0f}% of work is "
+                        "outside scheduled blocks"
+                    ),
                     suggestion=(
                         "Move Niyam block to when this work naturally happens"
                     ),

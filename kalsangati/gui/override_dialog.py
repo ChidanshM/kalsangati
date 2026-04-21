@@ -8,7 +8,6 @@ as unplanned), wait/snooze, or switch activity.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -47,15 +46,15 @@ class OverrideDialog(QDialog):
         activity: str,
         next_block_day: str,
         next_block_time: str,
-        available_activities: Optional[list[str]] = None,
-        parent: Optional[QWidget] = None,
+        available_activities: list[str] | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Out-of-Block Alert")
         self.setMinimumWidth(420)
         self._choice: OverrideChoice = OverrideChoice.SNOOZE
         self._override_reason: str = ""
-        self._switched_activity: Optional[str] = None
+        self._switched_activity: str | None = None
 
         layout = QVBoxLayout(self)
 
@@ -121,7 +120,7 @@ class OverrideDialog(QDialog):
         return self._override_reason
 
     @property
-    def switched_activity(self) -> Optional[str]:
+    def switched_activity(self) -> str | None:
         """The new activity if the user chose to switch."""
         return self._switched_activity
 

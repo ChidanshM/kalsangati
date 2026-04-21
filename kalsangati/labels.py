@@ -14,10 +14,8 @@ from __future__ import annotations
 import re
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
 
 from kalsangati.db import transaction
-
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -37,7 +35,7 @@ class LabelGroup:
 
     id: int
     canonical_label: str
-    parent_group: Optional[str]
+    parent_group: str | None
     level: int
 
 
@@ -46,7 +44,7 @@ class LabelGroup:
 _PREFIX_RE = re.compile(r"^(\d{2}(?:-\d{2})*)")
 
 
-def suggest_parent_from_prefix(canonical: str) -> Optional[str]:
+def suggest_parent_from_prefix(canonical: str) -> str | None:
     """Derive a parent group name from a numeric prefix convention.
 
     For a label like ``"01-02-01-lecture"`` the parent is ``"01-02"``,
@@ -119,7 +117,7 @@ def get_all_mappings(conn: sqlite3.Connection) -> list[LabelMapping]:
     return [LabelMapping(r["id"], r["raw_label"], r["canonical_label"]) for r in rows]
 
 
-def resolve_label(conn: sqlite3.Connection, raw: str) -> Optional[str]:
+def resolve_label(conn: sqlite3.Connection, raw: str) -> str | None:
     """Look up the canonical label for a raw imported string.
 
     Args:
@@ -165,8 +163,8 @@ def update_mapping(
     conn: sqlite3.Connection,
     mapping_id: int,
     *,
-    raw_label: Optional[str] = None,
-    canonical_label: Optional[str] = None,
+    raw_label: str | None = None,
+    canonical_label: str | None = None,
 ) -> None:
     """Update an existing mapping's fields.
 
@@ -272,8 +270,8 @@ def get_children(conn: sqlite3.Connection, parent: str) -> list[LabelGroup]:
 def add_group(
     conn: sqlite3.Connection,
     canonical_label: str,
-    parent_group: Optional[str] = None,
-    level: Optional[int] = None,
+    parent_group: str | None = None,
+    level: int | None = None,
 ) -> int:
     """Insert a new group node.
 
@@ -307,8 +305,8 @@ def update_group(
     conn: sqlite3.Connection,
     group_id: int,
     *,
-    parent_group: Optional[str] = None,
-    level: Optional[int] = None,
+    parent_group: str | None = None,
+    level: int | None = None,
 ) -> None:
     """Update a group's parent or level.
 

@@ -7,12 +7,10 @@ controls, and optional actuals panel.
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -37,8 +35,8 @@ class NiyamCompare(QWidget):
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__()
         self._conn = conn
-        self._niyam_a: Optional[Niyam] = None
-        self._niyam_b: Optional[Niyam] = None
+        self._niyam_a: Niyam | None = None
+        self._niyam_b: Niyam | None = None
         self._build_ui()
         self._refresh_dropdowns()
 
@@ -136,7 +134,8 @@ class NiyamCompare(QWidget):
             f"{len(self._niyam_b.activity_set)} activities · "
             f"{self._niyam_b.slot_count} slots   |   "
             f"Δ: {self._niyam_b.total_hours - self._niyam_a.total_hours:+.0f}h · "
-            f"{len(self._niyam_b.activity_set) - len(self._niyam_a.activity_set):+d} activities · "
+            f"{len(self._niyam_b.activity_set) - len(self._niyam_a.activity_set):+d} "
+            f"activities · "
             f"{self._niyam_b.slot_count - self._niyam_a.slot_count:+d} slots"
         )
 
@@ -157,9 +156,8 @@ class NiyamCompare(QWidget):
             elif filter_mode == "Only in A":
                 if act not in sum_a:
                     continue
-            elif filter_mode == "Only in B":
-                if act not in sum_b:
-                    continue
+            elif filter_mode == "Only in B" and act not in sum_b:
+                continue
 
             if search and search not in act.lower():
                 continue
@@ -194,7 +192,9 @@ class NiyamCompare(QWidget):
     def _num_item(val: float | int) -> QTableWidgetItem:
         text = f"{val:.1f}" if isinstance(val, float) else str(val)
         item = QTableWidgetItem(text)
-        item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        item.setTextAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
         return item
 
     @staticmethod

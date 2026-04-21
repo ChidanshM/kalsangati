@@ -7,7 +7,6 @@ and week start day.
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
 from PyQt5.QtWidgets import (
     QCheckBox,
@@ -16,7 +15,6 @@ from PyQt5.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,

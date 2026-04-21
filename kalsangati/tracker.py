@@ -12,7 +12,6 @@ import logging
 import platform
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class WindowInfo:
     pid: int
 
 
-def get_active_window() -> Optional[WindowInfo]:
+def get_active_window() -> WindowInfo | None:
     """Detect the currently active window.
 
     Returns:
@@ -44,7 +43,7 @@ def get_active_window() -> Optional[WindowInfo]:
         return None
 
 
-def _get_active_window_linux() -> Optional[WindowInfo]:
+def _get_active_window_linux() -> WindowInfo | None:
     """Linux implementation using ewmh + Xlib."""
     try:
         from ewmh import EWMH  # type: ignore[import-untyped]
@@ -66,13 +65,13 @@ def _get_active_window_linux() -> Optional[WindowInfo]:
         return None
 
 
-def _get_active_window_windows() -> Optional[WindowInfo]:
+def _get_active_window_windows() -> WindowInfo | None:
     """Windows implementation (future: pygetwindow)."""
     logger.info("Windows window tracking not yet implemented")
     return None
 
 
-def _get_active_window_macos() -> Optional[WindowInfo]:
+def _get_active_window_macos() -> WindowInfo | None:
     """macOS implementation (future: AppKit)."""
     logger.info("macOS window tracking not yet implemented")
     return None
@@ -80,7 +79,7 @@ def _get_active_window_macos() -> Optional[WindowInfo]:
 
 def map_window_to_activity(
     conn: sqlite3.Connection, window: WindowInfo
-) -> Optional[str]:
+) -> str | None:
     """Resolve a window to a canonical activity via label mappings.
 
     Checks the app_name and title against label_mappings.

@@ -10,9 +10,8 @@ from __future__ import annotations
 import logging
 import sqlite3
 import threading
-import time
+from collections.abc import Callable
 from datetime import datetime
-from typing import Callable, Optional
 
 from kalsangati.db import get_setting
 from kalsangati.niyam import Niyam, TimeBlock, get_active
@@ -21,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ── Notification backend ────────────────────────────────────────────────
 
-_NOTIFY_FN: Optional[Callable[[str, str], None]] = None
+_NOTIFY_FN: Callable[[str, str], None] | None = None
 
 
 def _default_notify(title: str, message: str) -> None:
@@ -126,7 +125,7 @@ class NotificationScheduler:
     ) -> None:
         self._conn_factory = conn_factory
         self._poll_interval = poll_interval
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._notified: set[str] = set()  # track already-fired block keys
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from typing import Optional
 
 from kalsangati.db import transaction
 
@@ -20,8 +19,8 @@ class Project:
     id: int
     name: str
     canonical_activity: str
-    color: Optional[str] = None
-    notes: Optional[str] = None
+    color: str | None = None
+    notes: str | None = None
 
 
 # ── Row conversion ──────────────────────────────────────────────────────
@@ -55,7 +54,7 @@ def get_all(conn: sqlite3.Connection) -> list[Project]:
     return [_row_to_project(r) for r in rows]
 
 
-def get_by_id(conn: sqlite3.Connection, project_id: int) -> Optional[Project]:
+def get_by_id(conn: sqlite3.Connection, project_id: int) -> Project | None:
     """Fetch a project by primary key.
 
     Args:
@@ -94,8 +93,8 @@ def create(
     conn: sqlite3.Connection,
     name: str,
     canonical_activity: str,
-    color: Optional[str] = None,
-    notes: Optional[str] = None,
+    color: str | None = None,
+    notes: str | None = None,
 ) -> Project:
     """Create a new project.
 
@@ -123,10 +122,10 @@ def update(
     conn: sqlite3.Connection,
     project_id: int,
     *,
-    name: Optional[str] = None,
-    canonical_activity: Optional[str] = None,
-    color: Optional[str] = None,
-    notes: Optional[str] = None,
+    name: str | None = None,
+    canonical_activity: str | None = None,
+    color: str | None = None,
+    notes: str | None = None,
 ) -> None:
     """Update project fields.
 

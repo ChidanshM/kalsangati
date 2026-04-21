@@ -7,17 +7,11 @@ to day/hour slots.  Supports creating, editing, and cloning Niyam.
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
-from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter
+from PyQt5.QtCore import pyqtSignal
+from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
     QComboBox,
-    QDialog,
-    QDialogButtonBox,
-    QFormLayout,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
@@ -25,8 +19,6 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
-    QScrollArea,
-    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -47,7 +39,6 @@ from kalsangati.niyam import (
     time_str_to_minutes,
     update_blocks,
 )
-
 
 # ── Constants ───────────────────────────────────────────────────────────
 
@@ -73,7 +64,7 @@ class NiyamEditor(QWidget):
     def __init__(self, conn: sqlite3.Connection) -> None:
         super().__init__()
         self._conn = conn
-        self._current_niyam: Optional[Niyam] = None
+        self._current_niyam: Niyam | None = None
         self._activity_color_map: dict[str, str] = {}
         self._build_ui()
         self._refresh_niyam_list()
@@ -190,14 +181,19 @@ class NiyamEditor(QWidget):
         for col, day in enumerate(DAYS):
             for block in self._current_niyam.blocks_for_day(day):
                 # Find row range for this block
-                start_row = HALF_HOURS.index(block.start) if block.start in HALF_HOURS else None
+                start_row = (
+                    HALF_HOURS.index(block.start)
+                    if block.start in HALF_HOURS else None
+                )
                 end_slot = block.end
                 end_row = HALF_HOURS.index(end_slot) if end_slot in HALF_HOURS else None
 
                 if start_row is None:
                     continue
                 if end_row is None:
-                    end_row = min(start_row + int(block.duration_h * 2), len(HALF_HOURS))
+                    end_row = min(
+                        start_row + int(block.duration_h * 2), len(HALF_HOURS)
+                    )
 
                 # Assign color
                 if block.activity not in self._activity_color_map:
@@ -265,8 +261,8 @@ class NiyamEditor(QWidget):
         """Convert grid contents to TimeBlock dict."""
         blocks: dict[str, list[TimeBlock]] = {d: [] for d in DAYS}
         for col, day in enumerate(DAYS):
-            current_activity: Optional[str] = None
-            start_row: Optional[int] = None
+            current_activity: str | None = None
+            start_row: int | None = None
 
             for row in range(len(HALF_HOURS)):
                 item = self._grid.item(row, col)

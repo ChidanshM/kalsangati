@@ -11,10 +11,9 @@ import logging
 import sqlite3
 import sys
 from pathlib import Path
-from typing import Optional
 
-from PyQt5.QtCore import QTimer, Qt
-from PyQt5.QtGui import QIcon
+from PyQt5.QtCore import QTimer
+from PyQt5.QtGui import QCloseEvent
 from PyQt5.QtWidgets import (
     QAction,
     QApplication,
@@ -23,8 +22,6 @@ from PyQt5.QtWidgets import (
     QMessageBox,
     QStatusBar,
     QTabWidget,
-    QVBoxLayout,
-    QWidget,
 )
 
 from kalsangati.db import get_setting, init_db
@@ -35,7 +32,7 @@ from kalsangati.gui.niyam_editor import NiyamEditor
 from kalsangati.gui.settings import SettingsPanel
 from kalsangati.gui.stopwatch import StopwatchWidget
 from kalsangati.gui.task_planner import TaskPlanner
-from kalsangati.ingest import ingest_csv, refresh_weekly_aggregates, classify_sessions
+from kalsangati.ingest import classify_sessions, ingest_csv, refresh_weekly_aggregates
 from kalsangati.notifications import NotificationScheduler
 
 logger = logging.getLogger(__name__)
@@ -48,7 +45,7 @@ class MainWindow(QMainWindow):
         db_path: Override path to the SQLite database.
     """
 
-    def __init__(self, db_path: Optional[Path] = None) -> None:
+    def __init__(self, db_path: Path | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Kālsangati — Coherence with Time")
         self.setMinimumSize(1100, 720)
@@ -163,7 +160,7 @@ class MainWindow(QMainWindow):
             unrec = result.get("unrecognized", [])
             if unrec:
                 msg += f"\n\nUnrecognized labels ({len(unrec)}):\n"
-                msg += "\n".join(f"  • {l}" for l in unrec[:20])
+                msg += "\n".join(f"  • {label}" for label in unrec[:20])
             QMessageBox.information(self, "Import Complete", msg)
             self._status.showMessage(
                 f"Imported {result['imported']} sessions", 5000
@@ -173,14 +170,12 @@ class MainWindow(QMainWindow):
             logger.exception("CSV import failed")
 
     def _toggle_stopwatch(self) -> None:
-        # print(f"[DEBUG] toggle_stopwatch called, visible={self._stopwatch.isVisible()}")
         if self._stopwatch.isVisible():
             self._stopwatch.hide()
         else:
             self._stopwatch.show()
             self._stopwatch.raise_()
             self._stopwatch.activateWindow()  # try to force focus
-            # print(f"[DEBUG] after show, visible={self._stopwatch.isVisible()}, geometry={self._stopwatch.geometry()}")
 
 
     def _on_auto_refresh(self) -> None:
@@ -189,7 +184,7 @@ class MainWindow(QMainWindow):
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
-    def closeEvent(self, event) -> None:  # type: ignore[override]
+    def close_event(self, event: QCloseEvent) -> None:  # type: ignore[override]
         self._notifier.stop()
         self._stopwatch.close()
         self._refresh_timer.stop()

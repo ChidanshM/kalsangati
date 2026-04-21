@@ -7,7 +7,6 @@ label_groups (canonical → parent group hierarchy).
 from __future__ import annotations
 
 import sqlite3
-from typing import Optional
 
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import (
@@ -15,7 +14,6 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QInputDialog,
     QLabel,
-    QLineEdit,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -35,9 +33,7 @@ from kalsangati.labels import (
     delete_mapping,
     get_all_groups,
     get_all_mappings,
-    get_children,
     get_unrecognized_labels,
-    update_group,
     update_mapping,
 )
 

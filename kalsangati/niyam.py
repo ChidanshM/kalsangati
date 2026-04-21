@@ -17,7 +17,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from kalsangati.db import parse_time_blocks, serialize_time_blocks, transaction
 
@@ -199,7 +199,7 @@ class Niyam:
         """Return blocks for a given day name (lowercase)."""
         return self.time_blocks.get(day.lower(), [])
 
-    def block_at(self, day: str, time_str: str) -> Optional[TimeBlock]:
+    def block_at(self, day: str, time_str: str) -> TimeBlock | None:
         """Find the block covering a given time on a day.
 
         Args:
@@ -215,7 +215,7 @@ class Niyam:
                 return block
         return None
 
-    def block_at_minute(self, day: str, minute_of_day: int) -> Optional[TimeBlock]:
+    def block_at_minute(self, day: str, minute_of_day: int) -> TimeBlock | None:
         """Find the block covering a given minute-of-day on a day.
 
         Args:
@@ -275,7 +275,7 @@ def get_all(conn: sqlite3.Connection) -> list[Niyam]:
     return [_row_to_niyam(r) for r in rows]
 
 
-def get_by_id(conn: sqlite3.Connection, niyam_id: int) -> Optional[Niyam]:
+def get_by_id(conn: sqlite3.Connection, niyam_id: int) -> Niyam | None:
     """Fetch a single Niyam by primary key.
 
     Args:
@@ -291,7 +291,7 @@ def get_by_id(conn: sqlite3.Connection, niyam_id: int) -> Optional[Niyam]:
     return _row_to_niyam(row) if row else None
 
 
-def get_active(conn: sqlite3.Connection) -> Optional[Niyam]:
+def get_active(conn: sqlite3.Connection) -> Niyam | None:
     """Return the currently active Niyam, or None.
 
     Args:
@@ -309,7 +309,7 @@ def get_active(conn: sqlite3.Connection) -> Optional[Niyam]:
 def create(
     conn: sqlite3.Connection,
     name: str,
-    time_blocks: Optional[dict[str, list[TimeBlock]]] = None,
+    time_blocks: dict[str, list[TimeBlock]] | None = None,
     *,
     set_active: bool = False,
 ) -> Niyam:

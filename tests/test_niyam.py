@@ -8,10 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from kalsangati.db import init_db, parse_time_blocks
+from kalsangati.db import init_db
 from kalsangati.niyam import (
     MINUTES_PER_DAY,
-    Niyam,
     TimeBlock,
     activity_summary,
     clone,
@@ -27,7 +26,6 @@ from kalsangati.niyam import (
     time_str_to_minutes,
     update_blocks,
 )
-
 
 # ── Time helper tests ───────────────────────────────────────────────────
 

@@ -17,7 +17,6 @@ import logging
 import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 from kalsangati.db import get_setting, transaction
 from kalsangati.labels import resolve_label
@@ -281,7 +280,7 @@ def _week_start_for_date(
 
 def refresh_weekly_aggregates(
     conn: sqlite3.Connection,
-    week_start: Optional[str] = None,
+    week_start: str | None = None,
 ) -> int:
     """Rebuild weekly_aggregates from kalrekha data.
 
@@ -425,10 +424,12 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
         # Check if session start falls within any block for this activity
         is_planned = False
         for block in active.blocks_for_day(day):
-            if block.activity == activity:
-                if block.start_min <= session_start_min < block.end_min:
-                    is_planned = True
-                    break
+            if (
+                block.activity == activity
+                and block.start_min <= session_start_min < block.end_min
+            ):
+                is_planned = True
+                break
 
         conn.execute(
             "UPDATE kalrekha SET unplanned = ?, block_classified = 1 "

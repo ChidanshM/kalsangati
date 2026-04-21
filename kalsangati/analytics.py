@@ -9,12 +9,10 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional
 
 from kalsangati.db import get_setting
 from kalsangati.labels import resolve_label
 from kalsangati.niyam import Niyam, get_active
-
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -172,7 +170,7 @@ def _prescribed_hours_for_week(niyam: Niyam) -> dict[str, float]:
 def _logged_hours(
     conn: sqlite3.Connection,
     date_start: str,
-    date_end: Optional[str] = None,
+    date_end: str | None = None,
 ) -> dict[str, dict[str, float]]:
     """Query logged hours by activity, split planned/unplanned.
 
@@ -246,7 +244,7 @@ def today_summary(conn: sqlite3.Connection) -> DaySummary:
 
 def week_summary(
     conn: sqlite3.Connection,
-    week_start: Optional[str] = None,
+    week_start: str | None = None,
 ) -> WeekSummary:
     """Build the weekly Kālachakra summary with pacing alerts.
 
@@ -355,7 +353,7 @@ def streak_data(
 
 def adherence_score(
     conn: sqlite3.Connection,
-    week_start: Optional[str] = None,
+    week_start: str | None = None,
 ) -> float:
     """Compute a single 0–100 adherence score for a week.
 

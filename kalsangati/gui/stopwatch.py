@@ -12,9 +12,8 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import datetime
-from typing import Optional
 
-from PyQt5.QtCore import QTimer, Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QFont
 from PyQt5.QtWidgets import (
     QComboBox,
@@ -39,14 +38,14 @@ class StopwatchWidget(QWidget):
     """
 
     def __init__(
-        self, conn: sqlite3.Connection, parent: Optional[QWidget] = None
+        self, conn: sqlite3.Connection, parent: QWidget | None = None
     ) -> None:
         super().__init__(parent)
         self._conn = conn
         self._elapsed_seconds = 0
         self._is_running = False
-        self._session_start: Optional[datetime] = None
-        self._current_activity: Optional[str] = None
+        self._session_start: datetime | None = None
+        self._current_activity: str | None = None
 
         self.setWindowTitle("Kālsangati Stopwatch")
         # Normal top-level window. Qt.Tool + WindowStaysOnTopHint had

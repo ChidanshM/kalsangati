@@ -11,15 +11,10 @@ import sqlite3
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QColor
 from PyQt5.QtWidgets import (
-    QFrame,
-    QGridLayout,
     QGroupBox,
-    QHBoxLayout,
     QHeaderView,
     QLabel,
-    QProgressBar,
     QScrollArea,
-    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -28,13 +23,10 @@ from PyQt5.QtWidgets import (
 
 from kalsangati.analytics import (
     ActivityMetric,
-    DaySummary,
-    WeekSummary,
-    adherence_score,
     today_summary,
     week_summary,
 )
-from kalsangati.vimarsha import ReflectionFlag, build_vimarsha
+from kalsangati.vimarsha import build_vimarsha
 
 
 class AnalyticsDashboard(QWidget):
