@@ -338,7 +338,10 @@ def create(
         )
         niyam_id = cur.lastrowid
 
-    return get_by_id(conn, niyam_id)  # type: ignore[return-value]
+    assert niyam_id is not None  # guaranteed after a successful INSERT
+    result = get_by_id(conn, niyam_id)
+    assert result is not None  # round-trip of the row we just inserted
+    return result
 
 
 def update_blocks(

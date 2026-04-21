@@ -115,7 +115,10 @@ def create(
             (name, canonical_activity, color, notes),
         )
         pid = cur.lastrowid
-    return get_by_id(conn, pid)  # type: ignore[return-value]
+    assert pid is not None  # guaranteed after a successful INSERT
+    result = get_by_id(conn, pid)
+    assert result is not None  # round-trip of the row we just inserted
+    return result
 
 
 def update(

@@ -62,6 +62,22 @@ warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
 
+# Missing type stubs for third-party dependencies.  plyer and ewmh
+# don't ship .pyi files; silencing at the mypy level is the
+# ecosystem-standard remedy, not a sign of bad code on our side.
+[[tool.mypy.overrides]]
+module = ["plyer.*", "ewmh.*", "Xlib.*"]
+ignore_missing_imports = true
+
+# PyQt5's type stubs pessimistically declare many methods as returning
+# `T | None` even where the underlying Qt contract guarantees non-None:
+# QMainWindow.menuBar(), QTableWidget.horizontalHeader(),
+# QLayout.itemAt(), etc.  Fighting this produces more noise than safety.
+# Silence union-attr for the gui package only.
+[[tool.mypy.overrides]]
+module = "kalsangati.gui.*"
+disable_error_code = ["union-attr"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--cov=kalsangati --cov-report=term-missing"
