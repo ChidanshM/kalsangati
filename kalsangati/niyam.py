@@ -337,11 +337,9 @@ def create(
             (name, now, int(set_active), blocks_json),
         )
         niyam_id = cur.lastrowid
+        assert niyam_id is not None  # guaranteed after successful INSERT
 
-    assert niyam_id is not None  # guaranteed after a successful INSERT
-    result = get_by_id(conn, niyam_id)
-    assert result is not None  # round-trip of the row we just inserted
-    return result
+    return get_by_id(conn, niyam_id)  # type: ignore[return-value]
 
 
 def update_blocks(
@@ -496,3 +494,45 @@ def activity_summary(niyam: Niyam) -> dict[str, dict[str, float | int]]:
             entry["hours"] += b.duration_h  # type: ignore[operator]
             entry["slots"] += 1  # type: ignore[operator]
     return summary
+
+# ── Classification helpers ──────────────────────────────────────────────
+
+
+def is_session_unplanned_under(
+    niyam: Niyam | None,
+    activity: str,
+    day: str,
+    start_min: int,
+) -> bool:
+    """Classify a session as planned or unplanned against a Niyam.
+
+    A session is **planned** when, at the moment it started, the given
+    ``niyam`` had an active block on ``day`` covering ``start_min``
+    whose activity matches the session's activity.  Everything else —
+    no block at that moment, a block for a different activity, or no
+    Niyam at all — is **unplanned**.
+
+    This function is pure: it takes the Niyam as an argument rather
+    than looking up the active one.  That makes it reusable for
+    Pariṇāma comparisons ("would this session have been planned under
+    the proposed draft Niyam?") and for historical re-classification
+    without mutating current state.  Callers that want the currently-
+    active Niyam should pass ``get_active(conn)``.
+
+    Args:
+        niyam: The Niyam to classify against, or ``None`` if no Niyam
+            is active.  When ``None``, every session is unplanned.
+        activity: Canonical activity name (already resolved through
+            ``labels.resolve_label``).
+        day: Lowercase day name (``"monday"`` .. ``"sunday"``).
+        start_min: Session start in minutes-since-midnight.
+
+    Returns:
+        ``True`` if the session is unplanned under this Niyam.
+    """
+    if niyam is None:
+        return True
+    block = niyam.block_at_minute(day, start_min)
+    if block is None:
+        return True
+    return block.activity != activity
