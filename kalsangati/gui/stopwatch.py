@@ -6,10 +6,19 @@ Features:
 - Quick-switch: change activity mid-session without stopping
 - Block-aware task dropdown: auto-populates with tasks for the current
   Niyam block; other activities' tasks greyed out but visible
+
+Session commits route through
+:func:`kalsangati.services.commit_stopwatch_session.commit_stopwatch_session`
+— the widget does not touch SQLite directly.  Expected domain failures
+surface as non-blocking :class:`QMessageBox` warnings; unexpected
+exceptions are logged with a stack trace and reported via a critical
+dialog.  In both failure paths the stopwatch state is reset so the
+user is never stuck in a tracking state.
 """
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime
 
@@ -19,14 +28,20 @@ from PyQt5.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from kalsangati.db import transaction
+from kalsangati.exceptions import KalsangatiError
 from kalsangati.niyam import get_active
+from kalsangati.services.commit_stopwatch_session import (
+    commit_stopwatch_session,
+)
 from kalsangati.tasks import check_block_alignment
+
+logger = logging.getLogger(__name__)
 
 
 class StopwatchWidget(QWidget):
@@ -171,7 +186,9 @@ class StopwatchWidget(QWidget):
             self._status_label.setText("Select an activity first")
             return
 
-        # Check block alignment
+        # Check block alignment for pre-session UX feedback.  This is a
+        # display concern only — planned/unplanned classification at
+        # commit time is owned by commit_stopwatch_session.
         alignment = check_block_alignment(self._conn, activity)
         if not alignment["aligned"]:
             self._status_label.setText(
@@ -179,7 +196,8 @@ class StopwatchWidget(QWidget):
                 f"at {alignment['next_block_time']}"
             )
             # In full implementation, this triggers the override dialog.
-            # For now, proceed with unplanned flag.
+            # For now, proceed; the service will flag the session as
+            # unplanned at commit time.
 
         self._current_activity = activity
         self._is_running = True
@@ -214,42 +232,62 @@ class StopwatchWidget(QWidget):
         self._session_start = datetime.now()
 
     def _end_session(self) -> None:
+        """Commit the current session via the service layer.
+
+        Routes through
+        :func:`kalsangati.services.commit_stopwatch_session.commit_stopwatch_session`,
+        which handles bounds validation, label resolution, planned/
+        unplanned classification against the active Niyam, and resume-
+        extend vs. new-row decisioning.  The widget itself does no
+        SQLite writes.
+
+        Expected domain failures (:class:`KalsangatiError` subclasses)
+        are surfaced as non-blocking :class:`QMessageBox` warnings.
+        Unexpected exceptions are logged with a stack trace and
+        reported via a critical dialog.  ``self._session_start`` is
+        cleared before the service call so a failure never leaves the
+        widget believing it is still mid-session.
+        """
         if self._session_start is None or self._current_activity is None:
             return
 
-        end = datetime.now()
-        duration_min = (end - self._session_start).total_seconds() / 60
-
-        # Ignore very short sessions (< 10 seconds)
-        if duration_min < 0.17:
-            self._session_start = None
-            return
-
-        # Check if this was unplanned
-        alignment = check_block_alignment(
-            self._conn, self._current_activity, self._session_start
-        )
-        is_unplanned = not alignment["aligned"]
-
-        # Get selected task
-        task_text = self._task_combo.currentText()
-        task = task_text if task_text != "(no task)" else None
-
-        with transaction(self._conn) as cur:
-            cur.execute(
-                "INSERT INTO kalrekha "
-                "(project, task, date, start, \"end\", duration_min, "
-                " source, unplanned, block_classified) "
-                "VALUES (?, ?, ?, ?, ?, ?, 'manual_stopwatch', ?, 1)",
-                (
-                    self._current_activity,
-                    task,
-                    self._session_start.strftime("%Y-%m-%d"),
-                    self._session_start.strftime("%H:%M:%S"),
-                    end.strftime("%H:%M:%S"),
-                    round(duration_min, 2),
-                    int(is_unplanned),
-                ),
-            )
-
+        start = self._session_start
+        activity = self._current_activity
         self._session_start = None
+        end = datetime.now()
+
+        # Task id lives in the combo item's ``data`` role; the
+        # "(no task)" placeholder has no data payload, so currentData()
+        # returns None for it.  The isinstance guard keeps PyQt5's
+        # Any-typed currentData() from leaking into our int | None
+        # call surface.
+        task_data = self._task_combo.currentData()
+        task_id: int | None = task_data if isinstance(task_data, int) else None
+
+        try:
+            commit_stopwatch_session(
+                self._conn,
+                activity=activity,
+                start_time=start,
+                end_time=end,
+                task_id=task_id,
+                override_reason=None,
+            )
+        except KalsangatiError as e:
+            QMessageBox.warning(
+                self, "Couldn't record session", str(e)
+            )
+        except Exception:
+            logger.exception(
+                "Unexpected error committing stopwatch session "
+                "(activity=%r, start=%s, end=%s)",
+                activity,
+                start.isoformat(),
+                end.isoformat(),
+            )
+            QMessageBox.critical(
+                self,
+                "Something went wrong",
+                "The session could not be recorded. "
+                "Check logs for details.",
+            )
