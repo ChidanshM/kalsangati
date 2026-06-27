@@ -71,3 +71,19 @@ class IngestFormatError(KalsangatiError):
     required columns (project, date, start, end) are missing from the
     header row or the header row is absent entirely.
     """
+
+
+# ── Niyam errors ────────────────────────────────────────────────────────
+
+
+class NiyamNotFoundError(KalsangatiError):
+    """Raised when a Niyam id is referenced but no row exists with
+    that id.
+
+    Currently surfaces from
+    :func:`kalsangati.services.set_active_niyam.set_active_niyam` — a
+    caller passes an id that doesn't match any row (e.g. stale id from
+    a deleted Niyam still held by a GUI widget).  The presentation
+    layer catches this through the :class:`KalsangatiError` base and
+    shows a warning dialog.
+    """

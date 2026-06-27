@@ -6,6 +6,7 @@ to day/hour slots.  Supports creating, editing, and cloning Niyam.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 
 from PyQt5.QtCore import pyqtSignal
@@ -25,6 +26,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from kalsangati.exceptions import KalsangatiError
 from kalsangati.niyam import (
     DAYS,
     Niyam,
@@ -35,10 +37,12 @@ from kalsangati.niyam import (
     get_all,
     get_by_id,
     rename,
-    set_active,
     time_str_to_minutes,
     update_blocks,
 )
+from kalsangati.services.set_active_niyam import set_active_niyam
+
+logger = logging.getLogger(__name__)
 
 # ── Constants ───────────────────────────────────────────────────────────
 
@@ -320,11 +324,46 @@ class NiyamEditor(QWidget):
             self._refresh_niyam_list()
 
     def _on_activate(self) -> None:
+        """Activate the currently-selected Niyam via the service layer.
+
+        Calls :func:`kalsangati.services.set_active_niyam.set_active_niyam`,
+        which validates that the target exists and handles the already-
+        active case as a no-op.  Expected domain failures
+        (:class:`KalsangatiError` subclasses — notably
+        :class:`kalsangati.exceptions.NiyamNotFoundError`) surface as
+        non-blocking warnings; unexpected exceptions are logged and
+        reported via a critical dialog.
+
+        The ``niyam_changed`` signal is only emitted when the call
+        actually mutated state (``was_already_active`` is ``False``) —
+        downstream listeners otherwise do redundant refresh work.
+        """
         if self._current_niyam is None:
             return
-        set_active(self._conn, self._current_niyam.id)
+
+        niyam_id = self._current_niyam.id
+        try:
+            result = set_active_niyam(self._conn, niyam_id)
+        except KalsangatiError as e:
+            QMessageBox.warning(
+                self, "Couldn't activate Niyam", str(e)
+            )
+            return
+        except Exception:
+            logger.exception(
+                "Unexpected error activating Niyam (id=%s)", niyam_id
+            )
+            QMessageBox.critical(
+                self,
+                "Something went wrong",
+                "The Niyam could not be activated. "
+                "Check logs for details.",
+            )
+            return
+
         self._refresh_niyam_list()
-        self.niyam_changed.emit()
+        if not result.was_already_active:
+            self.niyam_changed.emit()
 
     def _on_rename(self) -> None:
         if self._current_niyam is None:
