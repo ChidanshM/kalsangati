@@ -76,6 +76,13 @@ EVENT_TYPES: frozenset[str] = frozenset({
     "resumed",
     "ended",
     "spilled",
+    # Status-transition verbs, added for the update_task_status service
+    # (Unit 7).  These live in the frozenset rather than a DB CHECK, so
+    # growing the vocabulary needs no schema migration (see the note
+    # above and SKILL-state.md, Unit 2 discussion).
+    "started",  # entering in_progress
+    "planned",  # entering this_week
+    "backlogged",  # returning to backlog manually (cf. automatic "spilled")
 })
 
 

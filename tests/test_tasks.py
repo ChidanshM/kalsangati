@@ -292,6 +292,8 @@ class TestEventTypes:
         expected = {
             "created", "assigned", "reassigned", "unscheduled",
             "on_hold", "resumed", "ended", "spilled",
+            # Unit 7 status-transition verbs (update_task_status service).
+            "started", "planned", "backlogged",
         }
         assert expected == EVENT_TYPES
 
