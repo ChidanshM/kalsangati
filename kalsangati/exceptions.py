@@ -87,3 +87,36 @@ class NiyamNotFoundError(KalsangatiError):
     layer catches this through the :class:`KalsangatiError` base and
     shows a warning dialog.
     """
+
+
+# ── Task errors ─────────────────────────────────────────────────────────
+
+
+class TaskNotFoundError(KalsangatiError):
+    """Raised when a task id is referenced but no row exists with that
+    id.
+
+    Surfaces from
+    :func:`kalsangati.services.update_task_status.update_task_status`
+    when a caller passes an id that matches no ``tasks`` row (e.g. a
+    stale id from a deleted task still held by a GUI widget).  Checked
+    at the service boundary before any transition logic so the caller
+    gets a clean domain error rather than a bare no-op UPDATE or a
+    foreign-key ``IntegrityError``.  Second concrete ``*NotFoundError``;
+    a shared ``NotFoundError`` base remains deferred under the rule of
+    three (``SKILL-state.md §14``).
+    """
+
+
+class InvalidTaskTransitionError(KalsangatiError):
+    """Raised when a task status change is not a legal lifecycle move,
+    or the requested target is not a recognised status value.
+
+    The status lifecycle graph lives in
+    :mod:`kalsangati.services.update_task_status`
+    (``_LEGAL_TRANSITIONS``).  Two situations raise this: the target
+    string is not one of the five statuses (a bad argument), or the
+    move is between two valid statuses but not an allowed edge (e.g.
+    ``done → on_hold``).  Re-setting a task to its current status is
+    *not* an error — that path is an idempotent no-op, not a raise.
+    """
