@@ -250,3 +250,21 @@ def update_task_status(
         was_noop=False,
         event=event,
     )
+
+
+def allowed_transitions(current_status: str) -> frozenset[str]:
+    """Return the statuses ``current_status`` may legally move to.
+
+    Excludes the current status itself (a same-status call is a no-op,
+    not a transition).  Returns an empty frozenset for an unrecognised
+    status rather than raising, so a caller populating UI controls can
+    fail soft.
+
+    Args:
+        current_status: The status to look up.
+
+    Returns:
+        The legal target statuses, or an empty frozenset if
+        ``current_status`` is not a recognised status.
+    """
+    return _LEGAL_TRANSITIONS.get(current_status, frozenset())

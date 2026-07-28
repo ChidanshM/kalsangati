@@ -7,9 +7,10 @@ tasks under their natural blocks, floating tasks at bottom.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (
     QComboBox,
     QDialog,
@@ -21,6 +22,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -31,10 +33,14 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
+from kalsangati.exceptions import KalsangatiError
 from kalsangati.projects import get_all as get_all_projects
+from kalsangati.services.update_task_status import (
+    allowed_transitions,
+    update_task_status,
+)
 from kalsangati.tasks import (
     all_capacities,
-    set_status,
 )
 from kalsangati.tasks import (
     create as create_task,
@@ -48,6 +54,8 @@ from kalsangati.tasks import (
 from kalsangati.tasks import (
     update as update_task,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class TaskPlanner(QWidget):
@@ -179,9 +187,12 @@ class TaskPlanner(QWidget):
 
         self._capacity_layout.addStretch()
 
-        # Week tasks table
+        # Week tasks table — this_week, in_progress, and on_hold all
+        # stay visible.  Without on_hold here, pausing a task would drop
+        # it out of both this view and the backlog.
         week_tasks = get_all_tasks(self._conn, status="this_week")
         week_tasks += get_all_tasks(self._conn, status="in_progress")
+        week_tasks += get_all_tasks(self._conn, status="on_hold")
         self._week_table.setRowCount(len(week_tasks))
 
         for i, t in enumerate(week_tasks):
@@ -192,7 +203,69 @@ class TaskPlanner(QWidget):
             self._week_table.setItem(
                 i, 3, QTableWidgetItem(t.due_date or "—")
             )
-            self._week_table.setItem(i, 4, QTableWidgetItem(t.status))
+            self._week_table.setCellWidget(
+                i, 4, self._make_status_combo(t.id, t.status)
+            )
+
+    def _make_status_combo(self, task_id: int, current: str) -> QComboBox:
+        """Build a status dropdown for a week-table row.
+
+        Item 0 is the current status (selected); the remaining items are
+        the legal transition targets, so an illegal move can never be
+        chosen.  ``activated`` fires only on user selection, so populating
+        the combo here does not trigger a transition.
+
+        Args:
+            task_id: Id of the task this row represents.
+            current: The task's current status.
+
+        Returns:
+            A configured combo box wired to the status-change handler.
+        """
+        combo = QComboBox()
+        combo.addItem(current, current)  # index 0 = current status
+        for target in sorted(allowed_transitions(current)):
+            combo.addItem(target, target)
+        combo.activated.connect(
+            lambda _idx, tid=task_id, c=combo: self._on_status_combo(tid, c)
+        )
+        return combo
+
+    def _on_status_combo(self, task_id: int, combo: QComboBox) -> None:
+        """Apply a status dropdown selection.
+
+        The apply is deferred with a zero-delay timer so refresh() can
+        rebuild the table — deleting this very combo — without destroying
+        the widget while it is still inside its own ``activated`` slot.
+        """
+        target = combo.currentData()
+        original = combo.itemData(0)
+        if target is None or target == original:
+            return  # re-selected the current status; nothing to do
+        QTimer.singleShot(0, lambda: self._apply_status(task_id, target))
+
+    def _apply_status(self, task_id: int, new_status: str) -> None:
+        """Route a status change through the service, surfacing errors.
+
+        Shared by the backlog "Mark Done" button and the week-table
+        status dropdowns.  Presentation-layer exception pattern: domain
+        errors become a warning dialog; unexpected errors are logged with
+        a stack trace and shown generically.  refresh() runs either way,
+        so on failure the dropdown resets to the task's real status.
+        """
+        try:
+            update_task_status(self._conn, task_id, new_status)
+        except KalsangatiError as e:
+            QMessageBox.warning(self, "Cannot change status", str(e))
+        except Exception:
+            logger.exception(
+                "Unexpected error setting task %s to %s", task_id, new_status
+            )
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
 
     def _on_add_task(self) -> None:
         dlg = _NewTaskDialog(self._conn, self)
@@ -226,8 +299,7 @@ class TaskPlanner(QWidget):
         if item is None:
             return
         tid = item.data(Qt.ItemDataRole.UserRole)
-        set_status(self._conn, tid, "done")
-        self.refresh()
+        self._apply_status(tid, "done")
 
     def _on_delete(self) -> None:
         item = self._backlog_list.currentItem()
