@@ -22,6 +22,7 @@ from kalsangati.exceptions import (
 )
 from kalsangati.services.update_task_status import (
     UpdateStatusResult,
+    allowed_transitions,
     update_task_status,
 )
 from kalsangati.tasks import EVENT_TYPES, create, get_by_id, get_task_events
@@ -358,3 +359,44 @@ def test_result_is_dataclass_with_slots(
         "was_noop",
         "event",
     )
+
+
+# ── allowed_transitions helper (Unit 8) ─────────────────────────
+
+
+class TestAllowedTransitions:
+    """allowed_transitions exposes the legal targets for a status."""
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            ("backlog", {"this_week", "in_progress", "on_hold", "done"}),
+            ("this_week", {"in_progress", "on_hold", "backlog", "done"}),
+            ("in_progress", {"on_hold", "done", "this_week", "backlog"}),
+            ("on_hold", {"in_progress", "this_week", "backlog", "done"}),
+            ("done", {"in_progress", "backlog"}),
+        ],
+        ids=["backlog", "this_week", "in_progress", "on_hold", "done"],
+    )
+    def test_returns_legal_targets(
+        self, status: str, expected: set[str]
+    ) -> None:
+        assert allowed_transitions(status) == expected
+
+    def test_excludes_current_status(self) -> None:
+        for status in ("backlog", "this_week", "in_progress", "on_hold", "done"):
+            assert status not in allowed_transitions(status)
+
+    def test_unknown_status_returns_empty(self) -> None:
+        assert allowed_transitions("nonsense") == frozenset()
+        assert allowed_transitions("") == frozenset()
+
+    def test_offered_targets_never_raise(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Every target the helper offers is an accepted, real move."""
+        for status in ("backlog", "this_week", "in_progress", "on_hold", "done"):
+            for target in allowed_transitions(status):
+                tid = _make_task(conn, status)
+                result = update_task_status(conn, tid, target)
+                assert result.was_noop is False
