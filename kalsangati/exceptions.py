@@ -120,3 +120,20 @@ class InvalidTaskTransitionError(KalsangatiError):
     ``done → on_hold``).  Re-setting a task to its current status is
     *not* an error — that path is an idempotent no-op, not a raise.
     """
+
+
+class InvalidTaskScheduleError(KalsangatiError):
+    """Raised when a proposed calendar slot for a task is out of bounds.
+
+    Surfaces from
+    :func:`kalsangati.services.schedule_task.schedule_task` when the
+    requested slot fails a bound check *before* the write: an
+    unrecognised weekday, a ``start_min`` outside ``0 <= start <
+    1440``, an ``end_min`` that is not strictly greater than
+    ``start_min`` or that exceeds ``1440`` (24:00), or a ``week_start``
+    that is not an ISO ``YYYY-MM-DD`` date.  Checking at the service
+    boundary turns what would otherwise be a raw
+    ``sqlite3.IntegrityError`` from the ``tasks`` all-or-nothing CHECK
+    into a clean domain error the presentation layer can show as a
+    warning.
+    """
