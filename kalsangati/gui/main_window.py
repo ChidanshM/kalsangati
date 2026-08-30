@@ -32,6 +32,7 @@ from kalsangati.gui.niyam_editor import NiyamEditor
 from kalsangati.gui.settings import SettingsPanel
 from kalsangati.gui.stopwatch import StopwatchWidget
 from kalsangati.gui.task_planner import TaskPlanner
+from kalsangati.infrastructure.logging_config import setup_logging
 from kalsangati.ingest import classify_sessions, ingest_csv, refresh_weekly_aggregates
 from kalsangati.notifications import NotificationScheduler
 
@@ -189,7 +190,20 @@ class MainWindow(QMainWindow):
 
     # ── Lifecycle ───────────────────────────────────────────────────────
 
-    def close_event(self, event: QCloseEvent) -> None:  # type: ignore[override]
+    def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
+        """Tear down background workers and the DB connection on close.
+
+        Named for Qt's virtual, which is camelCase — this method was
+        previously spelled ``close_event`` and was therefore never
+        called, leaving the notification thread and the connection to be
+        reaped by process exit instead of shut down cleanly.  ``noqa:
+        N802`` because the name is Qt's, not ours.
+
+        ``event`` is typed ``QCloseEvent | None`` to match PyQt5's stub
+        for the supertype.  Narrowing it to a bare ``QCloseEvent`` is a
+        Liskov violation and mypy rejects it — an override may widen
+        what it accepts, never narrow it.
+        """
         self._notifier.stop()
         self._stopwatch.close()
         self._refresh_timer.stop()
@@ -202,12 +216,10 @@ class MainWindow(QMainWindow):
 
 def main() -> None:
     """Launch the Kālsangati application."""
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    )
+    log_path = setup_logging()
     app = QApplication(sys.argv)
     app.setApplicationName("Kālsangati")
+    logger.info("Kālsangati starting — logging to %s", log_path or "console only")
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())

@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import datetime
 
 from kalsangati.db import get_setting
+from kalsangati.infrastructure.threads import safe_thread
 from kalsangati.niyam import Niyam, TimeBlock, get_active
 
 logger = logging.getLogger(__name__)
@@ -153,12 +154,31 @@ class NotificationScheduler:
         """Whether the scheduler thread is alive."""
         return self._thread is not None and self._thread.is_alive()
 
+    @safe_thread
     def _run(self) -> None:
-        """Main scheduler loop."""
+        """Main scheduler loop.
+
+        Two layers of protection, deliberately (E9, pitfall #23):
+
+        * The inner ``try`` around :meth:`_check_and_notify` keeps a
+          transient failure — a locked database, a momentarily
+          unavailable notification backend — from ending the loop.  The
+          error is logged and the next poll goes ahead as normal.
+        * ``@safe_thread`` is the outer net for everything the inner
+          guard cannot catch: a failure building the connection, or one
+          raised by the loop machinery itself.  That still stops the
+          scheduler, but it stops it with a stack trace instead of in
+          silence.
+        """
         conn = self._conn_factory()
         try:
             while not self._stop_event.is_set():
-                self._check_and_notify(conn)
+                try:
+                    self._check_and_notify(conn)
+                except Exception:
+                    logger.exception(
+                        "Notification check failed; scheduler continues"
+                    )
                 self._stop_event.wait(self._poll_interval)
         finally:
             conn.close()
