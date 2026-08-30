@@ -36,11 +36,32 @@ Design notes:
   the same reason, while still allowing a second override to supersede
   the first.
 
-TODO(E1): duration is computed from ``end_time - start_time`` which is
-wall-clock arithmetic.  After a laptop sleep / clock jump the value
-can be wildly wrong — see ``SKILL-state.md §17 E1``.  Fix requires
-monotonic-clock tracking in the stopwatch widget itself; handled in a
-future unit.
+Duration vs. timestamps (E1, resolved):
+
+* ``start_time`` / ``end_time`` are wall-clock and are what get stored
+  in the ``date`` / ``start`` / ``end`` columns.  Wall-clock is the
+  correct answer for *when* a session happened.
+* *How long* a session lasted is a different question, and wall-clock
+  arithmetic answers it wrongly whenever the clock jumps — a laptop
+  suspend, an NTP correction, or a DST transition mid-session all
+  inflate or deflate ``end_time - start_time``.  Callers that can
+  measure true elapsed time (the stopwatch widget, via
+  ``time.monotonic()``) pass it as ``duration_sec``, which is then
+  authoritative for validation and for the stored ``duration_min``.
+* ``duration_sec=None`` falls back to the wall-clock delta.  That is
+  the right behaviour for the CSV ingest path and for tests, where
+  sessions are already-recorded historical data and the delta is both
+  all we have and correct.
+* On resume-extend the new total is the *sum* of the stored duration
+  and this segment's duration, not the span from the original start to
+  the new end.  Summing keeps every segment monotonic-correct and
+  excludes the inter-segment gap (up to ``resume_window_sec``), which
+  was never time actually spent on the activity.
+
+Residual: a backwards clock jump can still store an ``end`` earlier
+than ``start`` in the wall-clock columns.  The recorded *duration*
+remains correct.  See ``SKILL-state.md §17 E7`` for the remaining
+timezone/DST work on the timestamp columns themselves.
 """
 
 from __future__ import annotations
@@ -170,8 +191,8 @@ def _extend_row(
     conn: sqlite3.Connection,
     *,
     row_id: int,
-    stored_start_hms: str,
-    stored_start_date: str,
+    prior_duration_sec: float,
+    segment_duration_sec: float,
     new_end_time: datetime,
     new_override_reason: str | None,
     preserve_override: bool,
@@ -179,13 +200,21 @@ def _extend_row(
     """Extend a kalrekha row's end + duration_min.  Returns new total
     duration in seconds.
 
+    The new total is ``prior_duration_sec + segment_duration_sec`` —
+    a sum of measured segments, not the wall-clock span from the
+    original start to ``new_end_time``.  This keeps the total correct
+    across clock jumps and excludes the inter-segment gap (see the
+    module docstring, E1).
+
+    ``prior_duration_sec`` is reconstructed from the stored
+    ``duration_min``, which is rounded to two decimals — so each extend
+    can introduce up to ~0.3s of rounding drift.  Negligible against
+    session lengths measured in minutes.
+
     ``preserve_override`` tells us whether the caller passed
     ``override_reason=None`` (preserve) or non-None (overwrite).
     """
-    stored_start = datetime.strptime(
-        f"{stored_start_date} {stored_start_hms}", "%Y-%m-%d %H:%M:%S"
-    )
-    new_duration_sec = (new_end_time - stored_start).total_seconds()
+    new_duration_sec = prior_duration_sec + segment_duration_sec
     new_duration_min = new_duration_sec / 60.0
     new_end_hms = new_end_time.strftime("%H:%M:%S")
 
@@ -216,6 +245,7 @@ def commit_stopwatch_session(
     task_id: int | None = None,
     override_reason: str | None = None,
     *,
+    duration_sec: float | None = None,
     min_session_sec: float = MIN_SESSION_SEC,
     resume_window_sec: float = RESUME_WINDOW_SEC,
 ) -> CommitResult:
@@ -241,6 +271,14 @@ def commit_stopwatch_session(
             commit, stored as-is.  On a resume-extend, a non-None
             value overwrites the stored value; ``None`` leaves the
             previously-stored value intact.
+        duration_sec: True elapsed seconds for this segment, as
+            measured by a monotonic clock.  When given it is
+            authoritative for both validation and the stored
+            duration, making the commit immune to clock jumps and
+            laptop suspends (E1).  When ``None`` the wall-clock delta
+            ``end_time - start_time`` is used instead — correct for
+            historical/imported sessions, where no monotonic
+            measurement exists.
         min_session_sec: Minimum session duration.  Test/tuning
             parameter.  Production callers should not pass this.
         resume_window_sec: Maximum gap (seconds) between a previous
@@ -255,16 +293,21 @@ def commit_stopwatch_session(
         InvalidSessionBoundsError: If ``end_time <= start_time``.
         SessionTooShortError: If the duration is below ``min_session_sec``.
     """
-    # 1. Bounds check.
-    duration_sec = (end_time - start_time).total_seconds()
-    if duration_sec <= 0:
+    # 1. Bounds check, against the measured duration when the caller
+    #    supplied one (monotonic) and the wall-clock delta otherwise.
+    measured_sec = (
+        duration_sec
+        if duration_sec is not None
+        else (end_time - start_time).total_seconds()
+    )
+    if measured_sec <= 0:
         raise InvalidSessionBoundsError(
             f"end_time ({end_time.isoformat()}) must be strictly after "
             f"start_time ({start_time.isoformat()})"
         )
-    if duration_sec < min_session_sec:
+    if measured_sec < min_session_sec:
         raise SessionTooShortError(
-            f"session duration {duration_sec:.3f}s is below minimum "
+            f"session duration {measured_sec:.3f}s is below minimum "
             f"{min_session_sec:.3f}s"
         )
 
@@ -296,19 +339,15 @@ def commit_stopwatch_session(
         )
 
         if existing is not None:
-            # Resume-extend: push the prior row's ``end`` forward.
-            # Retrieve the stored start + date via a separate fetch
-            # (we already have the id; keep the query explicit).
-            stored = conn.execute(
-                'SELECT start, date, unplanned FROM kalrekha WHERE id = ?',
-                (existing["id"],),
-            ).fetchone()
-            assert stored is not None  # id came from _find_resumable_row
+            # Resume-extend: push the prior row's ``end`` forward and
+            # add this segment's duration to the stored total.
+            # ``_find_resumable_row`` already selected duration_min and
+            # unplanned, so no second fetch is needed.
             combined_duration_sec = _extend_row(
                 conn,
                 row_id=existing["id"],
-                stored_start_hms=stored["start"],
-                stored_start_date=stored["date"],
+                prior_duration_sec=float(existing["duration_min"]) * 60.0,
+                segment_duration_sec=measured_sec,
                 new_end_time=end_time,
                 new_override_reason=override_reason,
                 preserve_override=(override_reason is None),
@@ -316,7 +355,7 @@ def commit_stopwatch_session(
             return CommitResult(
                 session_id=existing["id"],
                 extended=True,
-                unplanned=bool(stored["unplanned"]),
+                unplanned=bool(existing["unplanned"]),
                 duration_sec=combined_duration_sec,
             )
 
@@ -333,7 +372,7 @@ def commit_stopwatch_session(
                 start_time.strftime("%Y-%m-%d"),
                 start_time.strftime("%H:%M:%S"),
                 end_time.strftime("%H:%M:%S"),
-                round(duration_sec / 60.0, 2),
+                round(measured_sec / 60.0, 2),
                 int(unplanned),
                 override_reason,
             ),
@@ -345,5 +384,5 @@ def commit_stopwatch_session(
         session_id=new_id,
         extended=False,
         unplanned=unplanned,
-        duration_sec=duration_sec,
+        duration_sec=measured_sec,
     )

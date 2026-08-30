@@ -340,8 +340,12 @@ class TestResumeExtend:
         r2 = commit_stopwatch_session(conn, "act", s2, e2)
         assert r2.extended is True
         assert r2.session_id == r1.session_id
-        # Combined duration spans s1 → e2
-        assert r2.duration_sec == (e2 - s1).total_seconds()
+        # Combined duration is the SUM of both segments, excluding the
+        # 60s gap between them (E1 — summed, not spanned).
+        expected = (e1 - s1).total_seconds() + (e2 - s2).total_seconds()
+        assert r2.duration_sec == expected
+        # Explicitly NOT the s1 → e2 span.
+        assert r2.duration_sec != (e2 - s1).total_seconds()
 
     def test_extend_updates_end_and_duration_min(
         self, conn: sqlite3.Connection
@@ -359,8 +363,11 @@ class TestResumeExtend:
         ).fetchone()
         assert row["start"] == s1.strftime("%H:%M:%S")
         assert row["end"] == e2.strftime("%H:%M:%S")
-        # duration_min covers the full s1 → e2 span
-        expected_min = (e2 - s1).total_seconds() / 60.0
+        # Timestamps still bracket the whole span, but duration_min is
+        # the sum of measured segments — the 30s gap is excluded.
+        expected_min = (
+            (e1 - s1).total_seconds() + (e2 - s2).total_seconds()
+        ) / 60.0
         assert abs(row["duration_min"] - expected_min) < 0.01
 
     def test_gap_zero_extends(
@@ -636,3 +643,145 @@ class TestClassificationNotRecomputedOnExtend:
             (r1.session_id,),
         ).fetchone()
         assert row["unplanned"] == 1
+
+
+# ── Monotonic duration (E1) ────────────────────────────────────
+
+
+class TestMeasuredDuration:
+    """``duration_sec`` overrides wall-clock arithmetic (E1).
+
+    The stopwatch measures elapsed time with ``time.monotonic()`` and
+    passes it in; wall-clock timestamps still record *when*.  These
+    tests drive the parameter directly — no widget, no real clock.
+    """
+
+    def test_measured_duration_wins_over_wall_clock(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        r = commit_stopwatch_session(
+            conn, "act",
+            datetime(2026, 4, 20, 9, 0, 0),
+            datetime(2026, 4, 20, 9, 30, 0),
+            duration_sec=300.0,
+        )
+        assert r.duration_sec == 300.0
+        row = conn.execute(
+            "SELECT duration_min FROM kalrekha WHERE id = ?",
+            (r.session_id,),
+        ).fetchone()
+        assert row["duration_min"] == 5.0
+
+    def test_timestamps_still_wall_clock(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Duration is measured; *when* remains wall-clock."""
+        r = commit_stopwatch_session(
+            conn, "act",
+            datetime(2026, 4, 20, 9, 0, 0),
+            datetime(2026, 4, 20, 9, 30, 0),
+            duration_sec=300.0,
+        )
+        row = conn.execute(
+            'SELECT date, start, "end" FROM kalrekha WHERE id = ?',
+            (r.session_id,),
+        ).fetchone()
+        assert row["date"] == "2026-04-20"
+        assert row["start"] == "09:00:00"
+        assert row["end"] == "09:30:00"
+
+    def test_laptop_sleep_does_not_inflate_duration(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """The E1 scenario: 20 minutes worked across a 4-hour sleep.
+
+        Wall-clock says four hours twenty; the monotonic anchor says
+        twenty minutes.  The stored duration must be twenty.
+        """
+        start = datetime(2026, 4, 20, 9, 0, 0)
+        end = start + timedelta(hours=4, minutes=20)
+        r = commit_stopwatch_session(
+            conn, "act", start, end, duration_sec=1200.0,
+        )
+        assert r.duration_sec == 1200.0
+        row = conn.execute(
+            "SELECT duration_min FROM kalrekha WHERE id = ?",
+            (r.session_id,),
+        ).fetchone()
+        assert row["duration_min"] == 20.0
+
+    def test_measured_duration_drives_too_short_check(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """A long wall-clock span with a sub-minimum measured duration
+        is still rejected."""
+        with pytest.raises(SessionTooShortError):
+            commit_stopwatch_session(
+                conn, "act",
+                datetime(2026, 4, 20, 9, 0, 0),
+                datetime(2026, 4, 20, 9, 30, 0),
+                duration_sec=0.5,
+            )
+
+    def test_zero_measured_duration_raises_invalid_bounds(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        with pytest.raises(InvalidSessionBoundsError):
+            commit_stopwatch_session(
+                conn, "act",
+                datetime(2026, 4, 20, 9, 0, 0),
+                datetime(2026, 4, 20, 9, 30, 0),
+                duration_sec=0.0,
+            )
+
+    def test_backwards_clock_still_commits_with_measured_duration(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """An NTP correction can move the clock backwards mid-session.
+
+        With a monotonic measurement the session is still valid — the
+        wall-clock delta would have been negative.
+        """
+        start = datetime(2026, 4, 20, 9, 0, 0)
+        end = start - timedelta(minutes=10)
+        r = commit_stopwatch_session(
+            conn, "act", start, end, duration_sec=600.0,
+        )
+        assert r.duration_sec == 600.0
+
+    def test_extend_sums_measured_segments(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """Resume-extend adds measured durations rather than spanning
+        wall-clock, so a sleep between segments cannot inflate the
+        total."""
+        s1 = datetime(2026, 4, 20, 9, 0, 0)
+        e1 = datetime(2026, 4, 20, 9, 10, 0)
+        r1 = commit_stopwatch_session(
+            conn, "act", s1, e1, duration_sec=600.0,
+        )
+        s2 = e1 + timedelta(seconds=60)
+        e2 = s2 + timedelta(minutes=5)
+        r2 = commit_stopwatch_session(
+            conn, "act", s2, e2, duration_sec=300.0,
+        )
+        assert r2.extended is True
+        assert r2.session_id == r1.session_id
+        assert r2.duration_sec == 900.0
+        row = conn.execute(
+            "SELECT duration_min FROM kalrekha WHERE id = ?",
+            (r1.session_id,),
+        ).fetchone()
+        assert row["duration_min"] == 15.0
+
+    def test_none_falls_back_to_wall_clock(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """The ingest/historical path is unchanged."""
+        r = commit_stopwatch_session(
+            conn, "act",
+            datetime(2026, 4, 20, 9, 0, 0),
+            datetime(2026, 4, 20, 9, 30, 0),
+            duration_sec=None,
+        )
+        assert r.duration_sec == 1800.0
