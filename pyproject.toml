@@ -25,6 +25,7 @@ dependencies = [
     "pandas>=2.0",
     "watchdog>=3.0",
     "plyer>=2.1",
+    "platformdirs>=4.0",
 ]
 
 [project.optional-dependencies]
