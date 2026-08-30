@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer
@@ -60,6 +61,7 @@ class StopwatchWidget(QWidget):
         self._elapsed_seconds = 0
         self._is_running = False
         self._session_start: datetime | None = None
+        self._session_monotonic_start: float | None = None
         self._current_activity: str | None = None
 
         self.setWindowTitle("Kālsangati Stopwatch")
@@ -229,7 +231,11 @@ class StopwatchWidget(QWidget):
         self._time_label.setText(f"{h:02d}:{m:02d}:{s:02d}")
 
     def _start_session(self) -> None:
+        # Wall-clock answers *when*; the monotonic anchor answers *how
+        # long*.  Keeping both is what makes the committed duration
+        # survive a laptop suspend or a clock jump (E1).
         self._session_start = datetime.now()
+        self._session_monotonic_start = time.monotonic()
 
     def _end_session(self) -> None:
         """Commit the current session via the service layer.
@@ -253,8 +259,22 @@ class StopwatchWidget(QWidget):
 
         start = self._session_start
         activity = self._current_activity
+        monotonic_start = self._session_monotonic_start
         self._session_start = None
+        self._session_monotonic_start = None
         end = datetime.now()
+
+        # True elapsed seconds for this segment.  ``time.monotonic()``
+        # is unaffected by wall-clock changes, and on Linux does not
+        # advance across suspend — so a session spanning a four-hour
+        # sleep records the minutes actually worked, not the sleep.
+        # Falls back to None (service uses the wall-clock delta) if the
+        # anchor is somehow missing.
+        measured_sec = (
+            time.monotonic() - monotonic_start
+            if monotonic_start is not None
+            else None
+        )
 
         # Task id lives in the combo item's ``data`` role; the
         # "(no task)" placeholder has no data payload, so currentData()
@@ -272,6 +292,7 @@ class StopwatchWidget(QWidget):
                 end_time=end,
                 task_id=task_id,
                 override_reason=None,
+                duration_sec=measured_sec,
             )
         except KalsangatiError as e:
             QMessageBox.warning(
