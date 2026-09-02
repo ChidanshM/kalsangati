@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kalsangati.db import init_db
+from kalsangati.persistence.db import init_db
 
 
 @pytest.fixture

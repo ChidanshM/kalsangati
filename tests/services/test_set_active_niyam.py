@@ -2,7 +2,7 @@
 
 Service #3 in the six-service plan.  Atomic small service —
 validation + structured result + exception wrapping on top of the
-core :func:`kalsangati.niyam.set_active`.
+core :func:`kalsangati.core.niyam.set_active`.
 """
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ import sqlite3
 
 import pytest
 
-from kalsangati.exceptions import KalsangatiError, NiyamNotFoundError
-from kalsangati.niyam import create, get_active, get_by_id
+from kalsangati.core.exceptions import KalsangatiError, NiyamNotFoundError
+from kalsangati.core.niyam import create, get_active, get_by_id
 from kalsangati.services.set_active_niyam import (
     SetActiveResult,
     set_active_niyam,

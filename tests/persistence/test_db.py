@@ -1,10 +1,10 @@
-"""Tests for kalsangati.db — schema, settings, helpers."""
+"""Tests for kalsangati.persistence.db — schema, settings, helpers."""
 
 from __future__ import annotations
 
 import sqlite3
 
-from kalsangati.db import (
+from kalsangati.persistence.db import (
     get_setting,
     parse_time_blocks,
     serialize_time_blocks,

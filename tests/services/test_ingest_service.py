@@ -1,7 +1,7 @@
 """Tests for kalsangati.services.ingest_csv — the IngestCSVService.
 
 Also validates the ``classify_sessions`` refactor to use the pure
-:func:`kalsangati.niyam.is_session_unplanned_under` helper (Unit 4
+:func:`kalsangati.core.niyam.is_session_unplanned_under` helper (Unit 4
 deliverable — single classification code path).
 """
 
@@ -13,14 +13,14 @@ from pathlib import Path
 
 import pytest
 
-from kalsangati.exceptions import (
+from kalsangati.core.exceptions import (
     IngestFileNotFoundError,
     IngestFormatError,
     KalsangatiError,
 )
-from kalsangati.labels import add_mapping
-from kalsangati.niyam import TimeBlock
-from kalsangati.niyam import create as create_niyam
+from kalsangati.core.labels import add_mapping
+from kalsangati.core.niyam import TimeBlock
+from kalsangati.core.niyam import create as create_niyam
 from kalsangati.services.ingest_csv import IngestResult, ingest_csv_file
 
 # ── Helpers ─────────────────────────────────────────────────────────────

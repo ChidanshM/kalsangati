@@ -91,7 +91,7 @@ def map_window_to_activity(
     Returns:
         Canonical activity name, or None if no mapping matches.
     """
-    from kalsangati.labels import resolve_label
+    from kalsangati.core.labels import resolve_label
 
     # Try app_name first, then title
     result = resolve_label(conn, window.app_name)

@@ -10,19 +10,19 @@ Scheduling is the *calendar-placement* axis: it writes the task's four
 ``scheduled_*`` columns (day, start minute, end minute, week start).  It
 is deliberately independent of the weekly-hours axis (``week_assigned``
 + ``status`` + ``estimated_hours``) that
-:func:`kalsangati.tasks.capacity_for_activity` measures — placing a task
+:func:`kalsangati.core.tasks.capacity_for_activity` measures — placing a task
 on the grid does not move it to ``this_week`` and does not change its
 status.  Status changes are ``UpdateTaskStatus`` (service #5) territory.
 
 What :func:`schedule_task` does, in order:
 
 1. Validate the proposed slot's bounds before any DB work (raises
-   :class:`kalsangati.exceptions.InvalidTaskScheduleError`) — mirroring
+   :class:`kalsangati.core.exceptions.InvalidTaskScheduleError`) — mirroring
    the way ``update_task_status`` validates its status argument first,
    and turning what would otherwise be a raw ``sqlite3.IntegrityError``
    from the ``tasks`` all-or-nothing CHECK into a clean domain error.
 2. Validate the task exists (raises
-   :class:`kalsangati.exceptions.TaskNotFoundError`).
+   :class:`kalsangati.core.exceptions.TaskNotFoundError`).
 3. Detect the no-op case — scheduling a task to the exact slot it
    already occupies is not an error and logs no event
    (``was_noop=True``, ``event=None``).
@@ -40,10 +40,10 @@ preserves the slot that was removed.
 Design notes:
 
 * Atomic write is owned here, not composed from
-  :func:`kalsangati.tasks.update` and
-  :func:`kalsangati.tasks.log_task_event` (which each commit
+  :func:`kalsangati.core.tasks.update` and
+  :func:`kalsangati.core.tasks.log_task_event` (which each commit
   independently).  The single-savepoint write mirrors
-  :func:`kalsangati.tasks.create` and
+  :func:`kalsangati.core.tasks.create` and
   :func:`kalsangati.services.update_task_status.update_task_status`.
 
 * Capacity and slot-overlap validation are intentionally *not* done
@@ -69,9 +69,9 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from kalsangati.db import transaction
-from kalsangati.exceptions import InvalidTaskScheduleError, TaskNotFoundError
-from kalsangati.tasks import TaskEvent, get_by_id
+from kalsangati.core.exceptions import InvalidTaskScheduleError, TaskNotFoundError
+from kalsangati.core.tasks import TaskEvent, get_by_id
+from kalsangati.persistence.db import transaction
 
 # ── Slot validation constants ───────────────────────────────────────────
 

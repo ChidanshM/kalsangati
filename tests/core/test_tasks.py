@@ -1,4 +1,4 @@
-"""Tests for kalsangati.tasks — CRUD, capacity, spillover, v3 schema.
+"""Tests for kalsangati.core.tasks — CRUD, capacity, spillover, v3 schema.
 
 The v3 tests exercise the schedule columns added to ``tasks``, the new
 ``task_events`` history table, and the v3 migration (including the
@@ -13,8 +13,7 @@ from pathlib import Path
 
 import pytest
 
-from kalsangati.db import SCHEMA_VERSION, init_db
-from kalsangati.tasks import (
+from kalsangati.core.tasks import (
     EVENT_TYPES,
     create,
     delete,
@@ -26,6 +25,7 @@ from kalsangati.tasks import (
     set_status,
     update,
 )
+from kalsangati.persistence.db import SCHEMA_VERSION, init_db
 
 
 class TestTaskCrud:

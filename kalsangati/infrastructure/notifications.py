@@ -13,9 +13,9 @@ import threading
 from collections.abc import Callable
 from datetime import datetime
 
-from kalsangati.db import get_setting
+from kalsangati.core.niyam import Niyam, TimeBlock, get_active
 from kalsangati.infrastructure.threads import safe_thread
-from kalsangati.niyam import Niyam, TimeBlock, get_active
+from kalsangati.persistence.db import get_setting
 
 logger = logging.getLogger(__name__)
 

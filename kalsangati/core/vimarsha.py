@@ -10,9 +10,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 
-from kalsangati.db import get_setting
-from kalsangati.labels import resolve_hierarchy, resolve_label
-from kalsangati.niyam import Niyam, get_active, get_by_id
+from kalsangati.core.labels import resolve_hierarchy, resolve_label
+from kalsangati.core.niyam import Niyam, get_active, get_by_id
+from kalsangati.persistence.db import get_setting
 
 # ── Data classes ────────────────────────────────────────────────────────
 

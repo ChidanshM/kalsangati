@@ -26,8 +26,8 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.exceptions import KalsangatiError
-from kalsangati.niyam import (
+from kalsangati.core.exceptions import KalsangatiError
+from kalsangati.core.niyam import (
     DAYS,
     Niyam,
     TimeBlock,
@@ -330,7 +330,7 @@ class NiyamEditor(QWidget):
         which validates that the target exists and handles the already-
         active case as a no-op.  Expected domain failures
         (:class:`KalsangatiError` subclasses — notably
-        :class:`kalsangati.exceptions.NiyamNotFoundError`) surface as
+        :class:`kalsangati.core.exceptions.NiyamNotFoundError`) surface as
         non-blocking warnings; unexpected exceptions are logged and
         reported via a critical dialog.
 

@@ -18,8 +18,8 @@ import sqlite3
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from kalsangati.db import get_setting, transaction
-from kalsangati.labels import resolve_label
+from kalsangati.core.labels import resolve_label
+from kalsangati.persistence.db import get_setting, transaction
 
 logger = logging.getLogger(__name__)
 
@@ -376,7 +376,7 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
     """Retroactively classify imported sessions as planned/unplanned.
 
     Checks each unclassified kalrekha session against the active Niyam
-    via :func:`kalsangati.niyam.is_session_unplanned_under` — the same
+    via :func:`kalsangati.core.niyam.is_session_unplanned_under` — the same
     pure classifier used by the stopwatch commit service.  A session is
     ``planned`` if it falls within a scheduled block for the matching
     activity at its start time.
@@ -387,7 +387,7 @@ def classify_sessions(conn: sqlite3.Connection) -> int:
     Returns:
         Number of sessions classified.
     """
-    from kalsangati.niyam import (
+    from kalsangati.core.niyam import (
         get_active,
         is_session_unplanned_under,
         time_str_to_minutes,

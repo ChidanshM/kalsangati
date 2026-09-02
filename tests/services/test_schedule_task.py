@@ -13,8 +13,8 @@ import sqlite3
 
 import pytest
 
-from kalsangati import tasks
-from kalsangati.exceptions import InvalidTaskScheduleError, TaskNotFoundError
+from kalsangati.core import tasks
+from kalsangati.core.exceptions import InvalidTaskScheduleError, TaskNotFoundError
 from kalsangati.services.schedule_task import (
     ScheduleResult,
     UnscheduleResult,

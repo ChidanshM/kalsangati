@@ -1,18 +1,18 @@
-"""Tests for kalsangati.ingest — CSV parsing, aggregation, classification."""
+"""Tests for kalsangati.core.ingest — CSV parsing, aggregation, classification."""
 
 from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
 
-from kalsangati.ingest import (
+from kalsangati.core.ingest import (
     classify_sessions,
     ingest_csv,
     refresh_weekly_aggregates,
 )
-from kalsangati.labels import add_mapping
-from kalsangati.niyam import TimeBlock
-from kalsangati.niyam import create as create_niyam
+from kalsangati.core.labels import add_mapping
+from kalsangati.core.niyam import TimeBlock
+from kalsangati.core.niyam import create as create_niyam
 
 
 class TestIngestCsv:
