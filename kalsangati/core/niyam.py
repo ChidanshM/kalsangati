@@ -19,7 +19,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from kalsangati.db import parse_time_blocks, serialize_time_blocks, transaction
+from kalsangati.persistence.db import (
+    parse_time_blocks,
+    serialize_time_blocks,
+    transaction,
+)
 
 DAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
 

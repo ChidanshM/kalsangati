@@ -11,8 +11,8 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from kalsangati.db import get_setting, transaction
-from kalsangati.niyam import get_active
+from kalsangati.core.niyam import get_active
+from kalsangati.persistence.db import get_setting, transaction
 
 # ── Data classes ────────────────────────────────────────────────────────
 
@@ -434,7 +434,7 @@ def capacity_for_activity(
     Returns:
         A CapacityInfo instance.
     """
-    from kalsangati.analytics import _current_week_start
+    from kalsangati.core.analytics import _current_week_start
 
     start_day = get_setting(conn, "week_start_day") or "monday"
     ws = week_start or _current_week_start(start_day)
@@ -498,7 +498,7 @@ def all_capacities(
         activities.update(niyam.activity_set)
 
     # Also include activities from assigned tasks
-    from kalsangati.analytics import _current_week_start
+    from kalsangati.core.analytics import _current_week_start
     start_day = get_setting(conn, "week_start_day") or "monday"
     ws = week_start or _current_week_start(start_day)
 

@@ -21,12 +21,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.analytics import (
+from kalsangati.core.analytics import (
     ActivityMetric,
     today_summary,
     week_summary,
 )
-from kalsangati.vimarsha import build_vimarsha
+from kalsangati.core.vimarsha import build_vimarsha
 
 
 class AnalyticsDashboard(QWidget):

@@ -14,7 +14,7 @@ What the service does, in order:
 2. Resolve the session's canonical activity through the label
    converter.
 3. Classify planned vs. unplanned against the currently-active Niyam
-   via :func:`kalsangati.niyam.is_session_unplanned_under`.
+   via :func:`kalsangati.core.niyam.is_session_unplanned_under`.
 4. Decide resume-extend vs. new row: if the most recent ``kalrekha``
    row for the same canonical activity + task title ended within the
    last ``resume_window_sec`` seconds and is on the same date, the new
@@ -70,11 +70,11 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from kalsangati.db import transaction
-from kalsangati.exceptions import InvalidSessionBoundsError, SessionTooShortError
-from kalsangati.labels import resolve_label
-from kalsangati.niyam import DAYS, get_active, is_session_unplanned_under
-from kalsangati.tasks import get_by_id as get_task_by_id
+from kalsangati.core.exceptions import InvalidSessionBoundsError, SessionTooShortError
+from kalsangati.core.labels import resolve_label
+from kalsangati.core.niyam import DAYS, get_active, is_session_unplanned_under
+from kalsangati.core.tasks import get_by_id as get_task_by_id
+from kalsangati.persistence.db import transaction
 
 # Default thresholds.  Exposed as keyword-only parameters on the
 # service function so tests can exercise boundary behaviour without

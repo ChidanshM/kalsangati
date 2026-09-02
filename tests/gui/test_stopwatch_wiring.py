@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch  # noqa: E402
 import pytest  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QMessageBox  # noqa: E402
 
-from kalsangati.exceptions import SessionTooShortError  # noqa: E402
+from kalsangati.core.exceptions import SessionTooShortError  # noqa: E402
 from kalsangati.gui.stopwatch import StopwatchWidget  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────

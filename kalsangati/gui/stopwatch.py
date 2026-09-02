@@ -35,12 +35,12 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.exceptions import KalsangatiError
-from kalsangati.niyam import get_active
+from kalsangati.core.exceptions import KalsangatiError
+from kalsangati.core.niyam import get_active
+from kalsangati.core.tasks import check_block_alignment
 from kalsangati.services.commit_stopwatch_session import (
     commit_stopwatch_session,
 )
-from kalsangati.tasks import check_block_alignment
 
 logger = logging.getLogger(__name__)
 

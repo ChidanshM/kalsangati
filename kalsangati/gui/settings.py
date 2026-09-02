@@ -23,7 +23,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.db import get_setting, set_setting
+from kalsangati.persistence.db import get_setting, set_setting
 
 
 class SettingsPanel(QWidget):

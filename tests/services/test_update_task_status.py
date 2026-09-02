@@ -15,17 +15,17 @@ import sqlite3
 
 import pytest
 
-from kalsangati.exceptions import (
+from kalsangati.core.exceptions import (
     InvalidTaskTransitionError,
     KalsangatiError,
     TaskNotFoundError,
 )
+from kalsangati.core.tasks import EVENT_TYPES, create, get_by_id, get_task_events
 from kalsangati.services.update_task_status import (
     UpdateStatusResult,
     allowed_transitions,
     update_task_status,
 )
-from kalsangati.tasks import EVENT_TYPES, create, get_by_id, get_task_events
 
 # The arrow used in the auto-generated event note (``previous→new``).
 _ARROW = "\u2192"
@@ -306,7 +306,7 @@ class TestScheduleSnapshot:
     def test_scheduled_fields_are_snapshot(
         self, conn: sqlite3.Connection
     ) -> None:
-        from kalsangati import tasks
+        from kalsangati.core import tasks
 
         tid = _make_task(conn, "this_week")
         # Populate all four scheduled_* fields together (fat CHECK).

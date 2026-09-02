@@ -1,4 +1,4 @@
-"""Tests for kalsangati.labels — conversion, grouping, hierarchy."""
+"""Tests for kalsangati.core.labels — conversion, grouping, hierarchy."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import sqlite3
 
 import pytest
 
-from kalsangati.labels import (
+from kalsangati.core.labels import (
     add_group,
     add_mapping,
     auto_populate_groups,

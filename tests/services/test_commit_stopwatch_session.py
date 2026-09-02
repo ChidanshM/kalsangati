@@ -17,27 +17,27 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from kalsangati.exceptions import (
+from kalsangati.core.exceptions import (
     InvalidSessionBoundsError,
     KalsangatiError,
     SessionTooShortError,
 )
-from kalsangati.niyam import (
+from kalsangati.core.niyam import (
     TimeBlock,
     is_session_unplanned_under,
     set_active,
     update_blocks,
 )
-from kalsangati.niyam import (
+from kalsangati.core.niyam import (
     create as create_niyam,
 )
+from kalsangati.core.tasks import create as create_task
 from kalsangati.services.commit_stopwatch_session import (
     MIN_SESSION_SEC,
     RESUME_WINDOW_SEC,
     CommitResult,
     commit_stopwatch_session,
 )
-from kalsangati.tasks import create as create_task
 
 # ── Classification helper ──────────────────────────────────────────────
 
@@ -67,7 +67,7 @@ class TestIsSessionUnplannedUnder:
     def test_inside_block_matching_activity_planned(
         self, conn: sqlite3.Connection
     ) -> None:
-        from kalsangati.niyam import get_active
+        from kalsangati.core.niyam import get_active
         self._make_niyam_mon_9_11(conn, activity="act")
         niyam = get_active(conn)
         assert is_session_unplanned_under(
@@ -77,7 +77,7 @@ class TestIsSessionUnplannedUnder:
     def test_inside_block_different_activity_unplanned(
         self, conn: sqlite3.Connection
     ) -> None:
-        from kalsangati.niyam import get_active
+        from kalsangati.core.niyam import get_active
         self._make_niyam_mon_9_11(conn, activity="act")
         niyam = get_active(conn)
         # Session is at 10:00, block is for "act", session activity is
@@ -89,7 +89,7 @@ class TestIsSessionUnplannedUnder:
     def test_outside_block_unplanned(
         self, conn: sqlite3.Connection
     ) -> None:
-        from kalsangati.niyam import get_active
+        from kalsangati.core.niyam import get_active
         self._make_niyam_mon_9_11(conn, activity="act")
         niyam = get_active(conn)
         # 14:00 is outside the 09:00–11:00 block
@@ -103,7 +103,7 @@ class TestIsSessionUnplannedUnder:
         """A session starting at exactly end_min is OUTSIDE the block
         (``TimeBlock.contains_minute`` is end-exclusive).
         """
-        from kalsangati.niyam import get_active
+        from kalsangati.core.niyam import get_active
         self._make_niyam_mon_9_11(conn, activity="act")
         niyam = get_active(conn)
         # start_min=660 (11:00) is the block's end_min — exclusive

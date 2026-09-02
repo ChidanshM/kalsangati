@@ -25,7 +25,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.labels import (
+from kalsangati.core.labels import (
     add_group,
     add_mapping,
     auto_populate_groups,

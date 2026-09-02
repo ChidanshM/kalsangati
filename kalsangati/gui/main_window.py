@@ -24,7 +24,11 @@ from PyQt5.QtWidgets import (
     QTabWidget,
 )
 
-from kalsangati.db import get_setting, init_db
+from kalsangati.core.ingest import (
+    classify_sessions,
+    ingest_csv,
+    refresh_weekly_aggregates,
+)
 from kalsangati.gui.analytics_dashboard import AnalyticsDashboard
 from kalsangati.gui.label_manager import LabelManager
 from kalsangati.gui.niyam_compare import NiyamCompare
@@ -33,8 +37,8 @@ from kalsangati.gui.settings import SettingsPanel
 from kalsangati.gui.stopwatch import StopwatchWidget
 from kalsangati.gui.task_planner import TaskPlanner
 from kalsangati.infrastructure.logging_config import setup_logging
-from kalsangati.ingest import classify_sessions, ingest_csv, refresh_weekly_aggregates
-from kalsangati.notifications import NotificationScheduler
+from kalsangati.infrastructure.notifications import NotificationScheduler
+from kalsangati.persistence.db import get_setting, init_db
 
 logger = logging.getLogger(__name__)
 

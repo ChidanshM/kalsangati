@@ -22,7 +22,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.niyam import Niyam, activity_summary, get_all, get_by_id
+from kalsangati.core.niyam import Niyam, activity_summary, get_all, get_by_id
 
 
 class NiyamCompare(QWidget):

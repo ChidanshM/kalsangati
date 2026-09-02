@@ -10,7 +10,7 @@ structured result, and a presentation-layer exception pattern.
 What the service does, in order:
 
 1. Validate that the target Niyam exists (raises
-   :class:`kalsangati.exceptions.NiyamNotFoundError` if not).
+   :class:`kalsangati.core.exceptions.NiyamNotFoundError` if not).
 2. Capture the currently-active Niyam's id (if any) before mutating.
 3. Detect the already-active case — activating the already-active
    Niyam is a no-op, not an error.  The call succeeds and the result
@@ -18,7 +18,7 @@ What the service does, in order:
    distinguish real activations from no-ops.
 4. Execute the atomic two-step UPDATE (deactivate all, then activate
    the target) inside a single transaction.  Delegates to
-   :func:`kalsangati.niyam.set_active` — the core function still owns
+   :func:`kalsangati.core.niyam.set_active` — the core function still owns
    the SQL; the service adds the validation wrapper and the result
    shape.
 
@@ -45,8 +45,8 @@ from __future__ import annotations
 import sqlite3
 from dataclasses import dataclass
 
-from kalsangati.exceptions import NiyamNotFoundError
-from kalsangati.niyam import get_active, get_by_id, set_active
+from kalsangati.core.exceptions import NiyamNotFoundError
+from kalsangati.core.niyam import get_active, get_by_id, set_active
 
 # ── Result type ─────────────────────────────────────────────────────────
 

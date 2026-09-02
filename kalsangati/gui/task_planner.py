@@ -33,26 +33,26 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-from kalsangati.exceptions import KalsangatiError
-from kalsangati.projects import get_all as get_all_projects
+from kalsangati.core.exceptions import KalsangatiError
+from kalsangati.core.projects import get_all as get_all_projects
+from kalsangati.core.tasks import (
+    all_capacities,
+)
+from kalsangati.core.tasks import (
+    create as create_task,
+)
+from kalsangati.core.tasks import (
+    delete as delete_task,
+)
+from kalsangati.core.tasks import (
+    get_all as get_all_tasks,
+)
+from kalsangati.core.tasks import (
+    update as update_task,
+)
 from kalsangati.services.update_task_status import (
     allowed_transitions,
     update_task_status,
-)
-from kalsangati.tasks import (
-    all_capacities,
-)
-from kalsangati.tasks import (
-    create as create_task,
-)
-from kalsangati.tasks import (
-    delete as delete_task,
-)
-from kalsangati.tasks import (
-    get_all as get_all_tasks,
-)
-from kalsangati.tasks import (
-    update as update_task,
 )
 
 logger = logging.getLogger(__name__)
@@ -286,8 +286,8 @@ class TaskPlanner(QWidget):
         if item is None:
             return
         tid = item.data(Qt.ItemDataRole.UserRole)
-        from kalsangati.analytics import _current_week_start
-        from kalsangati.db import get_setting
+        from kalsangati.core.analytics import _current_week_start
+        from kalsangati.persistence.db import get_setting
 
         start_day = get_setting(self._conn, "week_start_day") or "monday"
         ws = _current_week_start(start_day)

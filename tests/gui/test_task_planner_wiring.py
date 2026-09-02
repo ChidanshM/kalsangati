@@ -26,12 +26,12 @@ from unittest.mock import patch  # noqa: E402
 import pytest  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QComboBox, QMessageBox  # noqa: E402
 
-from kalsangati.exceptions import InvalidTaskTransitionError  # noqa: E402
+from kalsangati.core.exceptions import InvalidTaskTransitionError  # noqa: E402
+from kalsangati.core.tasks import create, get_by_id, get_task_events  # noqa: E402
 from kalsangati.gui.task_planner import TaskPlanner  # noqa: E402
 from kalsangati.services.update_task_status import (  # noqa: E402
     allowed_transitions,
 )
-from kalsangati.tasks import create, get_by_id, get_task_events  # noqa: E402
 
 # ── Fixtures ────────────────────────────────────────────────────────────
 

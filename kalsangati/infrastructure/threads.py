@@ -43,7 +43,7 @@ def safe_thread(fn: Callable[P, R]) -> Callable[P, R | None]:
       transient error needs its own ``try``/``except`` around the body
       of its loop, with this decorator as the outer net for everything
       that guard does not catch (see
-      :meth:`kalsangati.notifications.NotificationScheduler._run`).
+      :meth:`kalsangati.infrastructure.notifications.NotificationScheduler._run`).
 
     Args:
         fn: The thread target to wrap.

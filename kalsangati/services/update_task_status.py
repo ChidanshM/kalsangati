@@ -8,14 +8,14 @@ validation step, a domain operation, and a structured result.
 What the service does, in order:
 
 1. Reject an unrecognised target status before touching the DB
-   (raises :class:`kalsangati.exceptions.InvalidTaskTransitionError`).
+   (raises :class:`kalsangati.core.exceptions.InvalidTaskTransitionError`).
 2. Validate that the task exists (raises
-   :class:`kalsangati.exceptions.TaskNotFoundError` if not).
+   :class:`kalsangati.core.exceptions.TaskNotFoundError` if not).
 3. Detect the no-op case — setting a task to the status it already
    holds is not an error and logs no event.  The call succeeds and
    the result carries ``was_noop=True`` with ``event=None``.
 4. Reject illegal lifecycle moves per ``_LEGAL_TRANSITIONS`` (raises
-   :class:`kalsangati.exceptions.InvalidTaskTransitionError`).
+   :class:`kalsangati.core.exceptions.InvalidTaskTransitionError`).
 5. Choose the ``task_events`` verb for the transition
    (see :func:`_event_type_for`).
 6. Execute the ``tasks`` UPDATE and the ``task_events`` INSERT inside
@@ -25,11 +25,11 @@ What the service does, in order:
 Design notes:
 
 * Atomic write is owned here, not composed from
-  :func:`kalsangati.tasks.set_status` and
-  :func:`kalsangati.tasks.log_task_event`.  Those two helpers each
+  :func:`kalsangati.core.tasks.set_status` and
+  :func:`kalsangati.core.tasks.log_task_event`.  Those two helpers each
   commit independently, so calling them in sequence would be two
   commits — not atomic.  The single-savepoint write below mirrors the
-  pattern already used by :func:`kalsangati.tasks.create`, which
+  pattern already used by :func:`kalsangati.core.tasks.create`, which
   inserts the task row and its ``created`` event together.
 
 * Transition validation (D2) is separable from the rest of the
@@ -49,7 +49,7 @@ Design notes:
   successful call, as the niyam editor does today.
 
 * ``scheduled_*`` fields are snapshot into the event row from the task
-  as it stands, matching :func:`kalsangati.tasks.log_task_event`'s
+  as it stands, matching :func:`kalsangati.core.tasks.log_task_event`'s
   history-preserving contract.  This service does not itself touch the
   schedule — status is its only responsibility; slot assignment is
   ``ScheduleTask`` (service #4) territory.
@@ -61,9 +61,9 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 
-from kalsangati.db import transaction
-from kalsangati.exceptions import InvalidTaskTransitionError, TaskNotFoundError
-from kalsangati.tasks import TaskEvent, get_by_id
+from kalsangati.core.exceptions import InvalidTaskTransitionError, TaskNotFoundError
+from kalsangati.core.tasks import TaskEvent, get_by_id
+from kalsangati.persistence.db import transaction
 
 # ── Lifecycle policy ────────────────────────────────────────────────────
 
@@ -110,7 +110,7 @@ def _event_type_for(previous: str, new: str) -> str:
 
     Returns:
         A verb guaranteed to be a member of
-        :data:`kalsangati.tasks.EVENT_TYPES`.
+        :data:`kalsangati.core.tasks.EVENT_TYPES`.
     """
     if previous == "on_hold" and new in {"in_progress", "this_week"}:
         return "resumed"
@@ -136,7 +136,7 @@ class UpdateStatusResult:
             logged; ``event`` is ``None``.  Consumers that want to
             suppress user-facing feedback on redundant calls branch on
             this flag.
-        event: The :class:`kalsangati.tasks.TaskEvent` logged for the
+        event: The :class:`kalsangati.core.tasks.TaskEvent` logged for the
             transition, or ``None`` on the no-op path.
     """
 

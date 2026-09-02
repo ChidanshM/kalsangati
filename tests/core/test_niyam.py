@@ -1,4 +1,4 @@
-"""Tests for kalsangati.niyam — CRUD, clone, CSV import, and v2 time format."""
+"""Tests for kalsangati.core.niyam — CRUD, clone, CSV import, and v2 time format."""
 
 from __future__ import annotations
 
@@ -8,8 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from kalsangati.db import init_db
-from kalsangati.niyam import (
+from kalsangati.core.niyam import (
     MINUTES_PER_DAY,
     TimeBlock,
     activity_summary,
@@ -26,6 +25,7 @@ from kalsangati.niyam import (
     time_str_to_minutes,
     update_blocks,
 )
+from kalsangati.persistence.db import init_db
 
 # ── Time helper tests ───────────────────────────────────────────────────
 

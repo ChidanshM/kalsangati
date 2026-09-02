@@ -7,20 +7,20 @@ type and domain-level exception raising.
 
 What the service does, in order:
 
-1. Parse the CSV via :func:`kalsangati.ingest.ingest_csv` (inserts
+1. Parse the CSV via :func:`kalsangati.core.ingest.ingest_csv` (inserts
    sessions into ``kalrekha``).
 2. Classify the freshly-imported sessions against the active Niyam via
-   :func:`kalsangati.ingest.classify_sessions` (only touches rows with
+   :func:`kalsangati.core.ingest.classify_sessions` (only touches rows with
    ``block_classified = 0``; already-classified sessions are skipped).
 3. Rebuild weekly aggregates via
-   :func:`kalsangati.ingest.refresh_weekly_aggregates`.
+   :func:`kalsangati.core.ingest.refresh_weekly_aggregates`.
 
 The three steps are *not* wrapped in a single transaction — they each
 manage their own.  If classify fails after a successful ingest, the
 imported rows survive.  This matches the pre-service behaviour.
 
 Exceptions from the underlying functions are caught and re-raised as
-:class:`~kalsangati.exceptions.KalsangatiError` subclasses so the
+:class:`~kalsangati.core.exceptions.KalsangatiError` subclasses so the
 presentation layer can handle them uniformly.
 """
 
@@ -30,8 +30,8 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kalsangati.exceptions import IngestFileNotFoundError, IngestFormatError
-from kalsangati.ingest import (
+from kalsangati.core.exceptions import IngestFileNotFoundError, IngestFormatError
+from kalsangati.core.ingest import (
     classify_sessions,
     ingest_csv,
     refresh_weekly_aggregates,
