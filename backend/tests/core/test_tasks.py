@@ -101,11 +101,13 @@ class TestV3Schema:
     """Sanity-checks on the schema introduced in schema v3."""
 
     def test_schema_version_is_three(self, conn: sqlite3.Connection) -> None:
-        assert SCHEMA_VERSION == 3
+        # Lock updated for the v4 bump (hierarchy columns).  Kept as exact
+        # equality rather than >= so an unintended bump is still caught.
+        assert SCHEMA_VERSION == 4
         applied = conn.execute(
             "SELECT MAX(version) FROM _migrations"
         ).fetchone()[0]
-        assert applied == 3
+        assert applied == 4
 
     def test_tasks_has_scheduled_columns(
         self, conn: sqlite3.Connection
@@ -561,7 +563,7 @@ class TestV3Migration:
         v3_rows = conn2.execute(
             "SELECT COUNT(*) FROM _migrations WHERE version = 3"
         ).fetchone()[0]
-        assert applied == 3
+        assert applied == 4
         assert v3_rows == 1
 
         # Data survived intact.
@@ -593,7 +595,7 @@ class TestV3Migration:
         applied = conn.execute(
             "SELECT MAX(version) FROM _migrations"
         ).fetchone()[0]
-        assert applied == 3
+        assert applied == 4
 
         # Tasks survived with their ids.
         t42 = get_by_id(conn, 42)

@@ -8,6 +8,7 @@ runs forward-only migrations on open.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Generator
 from contextlib import contextmanager
@@ -25,7 +26,20 @@ _DEFAULT_DB_PATH = Path.home() / ".kalsangati" / "kalsangati.db"
 #     scheduled_week_start (all NULL for backlog tasks, all populated for
 #     scheduled tasks — enforced via CHECK).  Status enum gained 'on_hold'.
 #     New task_events history table (see _migrate_v3_task_schedule_and_events).
-SCHEMA_VERSION = 3
+# v4: tasks gained parent_id / slug / notes_path / deleted_at / sort_order,
+#     and the status enum gained 'dropped'.  A trigger rejects any
+#     parent_id change that would make a task its own ancestor (see
+#     _migrate_v4_task_hierarchy).  Every new column is dormant at
+#     introduction — no service writes them yet.  The legacy `notes`
+#     column is retained: notes_path supersedes it, but core/tasks.py
+#     still writes it, so removing it belongs with the unit that moves
+#     task bodies to disk.
+SCHEMA_VERSION = 4
+
+# Maximum length of a generated slug.  Slugs are a filename readability
+# hint, not an identifier — the row id is the identifier — so truncation
+# is safe.
+_SLUG_MAX_LEN = 42
 
 # ── Schema DDL ──────────────────────────────────────────────────────────
 
@@ -96,6 +110,12 @@ CREATE TABLE IF NOT EXISTS projects (
 -- v3: added scheduled_day / scheduled_start_min / scheduled_end_min /
 --     scheduled_week_start (all NULL = backlog, all populated = scheduled);
 --     status enum gained 'on_hold'.
+-- v4: added parent_id (self-referential, NULL = root), slug (filename hint,
+--     fixed at creation), notes_path (override; NULL = derive), deleted_at
+--     (soft delete; NULL = live), sort_order (manual sibling ordering);
+--     status enum gained 'dropped'.  `notes` is retained for now —
+--     notes_path supersedes it, but core/tasks.py still writes `notes`,
+--     so dropping it is a behaviour change and belongs elsewhere.
 CREATE TABLE IF NOT EXISTS tasks (
     id                   INTEGER PRIMARY KEY,
     title                TEXT NOT NULL,
@@ -105,7 +125,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     due_date             TEXT,
     status               TEXT DEFAULT 'backlog'
                          CHECK(status IN ('backlog','this_week',
-                                          'in_progress','on_hold','done')),
+                                          'in_progress','on_hold',
+                                          'done','dropped')),
     week_assigned        TEXT,
     spilled_from         TEXT,
     override_reason      TEXT,
@@ -115,6 +136,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     scheduled_start_min  INTEGER,
     scheduled_end_min    INTEGER,
     scheduled_week_start TEXT,
+    parent_id            INTEGER REFERENCES tasks(id),
+    slug                 TEXT,
+    notes_path           TEXT,
+    deleted_at           TEXT,
+    sort_order           REAL NOT NULL DEFAULT 0,
     CHECK (
         (scheduled_day IS NULL
          AND scheduled_start_min IS NULL
@@ -184,6 +210,50 @@ CREATE INDEX IF NOT EXISTS idx_task_events_task_id
     ON task_events(task_id);
 CREATE INDEX IF NOT EXISTS idx_task_events_event_at
     ON task_events(event_at);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent
+    ON tasks(parent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_deleted
+    ON tasks(deleted_at);
+"""
+
+# ── Trigger DDL ────────────────────────────────────────────────
+
+# Applied AFTER migrations, never before — see init_db.  A trigger body is
+# validated against the table as it exists at CREATE time, so installing
+# this against a pre-v4 `tasks` would fail on NEW.parent_id.  Dropping a
+# table also drops its triggers, so the v4 rebuild would destroy it anyway.
+#
+# Why a trigger rather than a service check alone: a cycle cannot be seen
+# from any single row (every parent/child pair stays locally consistent),
+# and any query that walks the tree hangs rather than fails.  Enforcement
+# no code path can bypass is worth the invisibility.
+#
+# UNION, not UNION ALL: UNION deduplicates, so the walk terminates even if
+# a cycle somehow already exists.  With UNION ALL the guard itself would
+# hang — exactly the failure it is here to prevent.
+#
+# RAISE(ABORT) undoes the statement and returns an error while leaving the
+# transaction open, so transaction()'s ROLLBACK TO SAVEPOINT still behaves
+# normally.  RAISE(ROLLBACK) would tear down the transaction underneath
+# the context manager.
+#
+# BEFORE UPDATE OF parent_id only, not INSERT: a new row cannot be its own
+# ancestor, because its id does not yet appear in any chain.
+_TRIGGER_SQL = """\
+CREATE TRIGGER IF NOT EXISTS trg_tasks_no_cycle
+BEFORE UPDATE OF parent_id ON tasks
+WHEN NEW.parent_id IS NOT NULL AND EXISTS (
+    WITH RECURSIVE up(id) AS (
+        SELECT NEW.parent_id
+        UNION
+        SELECT t.parent_id FROM tasks t JOIN up ON t.id = up.id
+        WHERE t.parent_id IS NOT NULL
+    )
+    SELECT 1 FROM up WHERE id = NEW.id
+)
+BEGIN
+    SELECT RAISE(ABORT, 'task hierarchy cycle');
+END;
 """
 
 # ── Default settings ────────────────────────────────────────────────────
@@ -453,12 +523,196 @@ def _migrate_v3_task_schedule_and_events(conn: sqlite3.Connection) -> None:
     )
 
 
+def _slugify(title: str, task_id: int) -> str:
+    """Local title → filename-safe slug helper.
+
+    **Deliberately duplicates** the equivalent helper that will live in
+    ``core/tasks.py``.  ``persistence/`` imports nothing internal — that
+    leaf invariant is what the layer split rests on — and the same
+    reasoning already governs ``_time_str_to_minutes`` above.
+
+    Divergence between the two is acceptable and expected: a migration is
+    frozen history, so it must keep producing what it produced on the day
+    it ran, while the core helper is free to evolve.
+
+    Non-ASCII characters are dropped rather than transliterated, so a
+    title with no ASCII at all yields an empty slug and falls back to
+    ``task-{id}``.  The slug is a readability hint for filenames; the row
+    id is the identifier, and the real title lives in the ``title``
+    column.
+
+    Args:
+        title: The task title, any content.
+        task_id: Row id, used only for the fallback.
+
+    Returns:
+        A lowercase hyphenated slug of at most ``_SLUG_MAX_LEN``
+        characters, never empty.
+    """
+    ascii_only = title.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", ascii_only).strip("-").lower()
+    # rstrip again: truncation can land on a hyphen.
+    slug = slug[:_SLUG_MAX_LEN].rstrip("-")
+    return slug or f"task-{task_id}"
+
+
+def _migrate_v4_task_hierarchy(conn: sqlite3.Connection) -> None:
+    """Add hierarchy, slug, notes-path, soft-delete and ordering columns.
+
+    Same 12-step rebuild as v3, and for the same reason: SQLite cannot
+    change a CHECK constraint in place, and the status enum gains
+    ``'dropped'`` here.
+
+    Changes:
+
+    * ``parent_id`` — self-referential FK; NULL means the task is a root.
+    * ``slug`` — nullable; backfilled for existing rows from their titles.
+      Nullable on purpose: every column here is dormant, and
+      ``core/tasks.py::create`` does not yet supply one, so NOT NULL would
+      break task creation — a behaviour change this unit must not make.
+      It tightens to NOT NULL when the creating service populates it.
+    * ``notes_path`` — override for the derived Markdown path.
+    * ``deleted_at`` — soft deletion; NULL means live.
+    * ``sort_order`` — REAL, seeded from the row id so existing rows come
+      out oldest-first.
+    * status CHECK gains ``'dropped'``.
+
+    ``notes`` is **retained**.  ``notes_path`` supersedes it, but
+    ``core/tasks.py`` still inserts and updates ``notes``, so removing the
+    column would change behaviour and break existing tests — which is
+    exactly what a migration-only unit must not do.  It goes when task
+    bodies move to disk and that module changes anyway.
+
+    ``sort_order`` is declared ``DEFAULT 0`` rather than defaulting to the
+    row id: SQLite requires DEFAULT to be a constant expression, so it
+    cannot reference another column.  The seeding happens in a follow-up
+    UPDATE below.  New rows are the creating service's responsibility.
+
+    Idempotency: if ``tasks`` already has ``parent_id``, the rebuild is
+    skipped.
+
+    FK safety: ``PRAGMA foreign_keys`` must be OFF during the rebuild, so
+    that ``task_events``' reference to ``tasks(id)`` survives the DROP.
+    Handled a level up in ``_apply_migrations`` via
+    ``_MIGRATIONS_NEEDING_FK_OFF``, because the pragma is a no-op inside
+    a transaction.  Row ids are preserved, so those references remain
+    valid once enforcement is restored.
+
+    The cycle trigger is **not** created here.  Dropping ``tasks`` drops
+    its triggers, and a fresh database skips this function entirely, so
+    the trigger is installed from ``_TRIGGER_SQL`` after migrations run.
+    """
+    cols = {
+        row["name"]
+        for row in conn.execute("PRAGMA table_info(tasks)").fetchall()
+    }
+    if "parent_id" in cols:
+        return  # already v4
+
+    # Individual execute() calls, never executescript() — see the note in
+    # _migrate_v3_task_schedule_and_events.
+    conn.execute(
+        """
+        CREATE TABLE tasks_new (
+            id                   INTEGER PRIMARY KEY,
+            title                TEXT NOT NULL,
+            project_id           INTEGER REFERENCES projects(id),
+            canonical_activity   TEXT NOT NULL,
+            estimated_hours      REAL,
+            due_date             TEXT,
+            status               TEXT DEFAULT 'backlog'
+                                 CHECK(status IN ('backlog','this_week',
+                                                  'in_progress','on_hold',
+                                                  'done','dropped')),
+            week_assigned        TEXT,
+            spilled_from         TEXT,
+            override_reason      TEXT,
+            notes                TEXT,
+            created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+            scheduled_day        TEXT,
+            scheduled_start_min  INTEGER,
+            scheduled_end_min    INTEGER,
+            scheduled_week_start TEXT,
+            parent_id            INTEGER REFERENCES tasks(id),
+            slug                 TEXT,
+            notes_path           TEXT,
+            deleted_at           TEXT,
+            sort_order           REAL NOT NULL DEFAULT 0,
+            CHECK (
+                (scheduled_day IS NULL
+                 AND scheduled_start_min IS NULL
+                 AND scheduled_end_min IS NULL
+                 AND scheduled_week_start IS NULL)
+                OR
+                (scheduled_day IN ('monday','tuesday','wednesday','thursday',
+                                   'friday','saturday','sunday')
+                 AND scheduled_start_min IS NOT NULL
+                 AND scheduled_start_min >= 0
+                 AND scheduled_start_min < 1440
+                 AND scheduled_end_min IS NOT NULL
+                 AND scheduled_end_min > scheduled_start_min
+                 AND scheduled_end_min <= 1440
+                 AND scheduled_week_start IS NOT NULL)
+            )
+        )
+        """
+    )
+
+    # sort_order takes the row id so existing rows keep creation order.
+    # slug is left NULL by the INSERT and backfilled immediately below.
+    conn.execute(
+        """
+        INSERT INTO tasks_new (
+            id, title, project_id, canonical_activity, estimated_hours,
+            due_date, status, week_assigned, spilled_from,
+            override_reason, notes, created_at, scheduled_day,
+            scheduled_start_min, scheduled_end_min, scheduled_week_start,
+            sort_order
+        )
+        SELECT
+            id, title, project_id, canonical_activity, estimated_hours,
+            due_date, status, week_assigned, spilled_from,
+            override_reason, notes, created_at, scheduled_day,
+            scheduled_start_min, scheduled_end_min, scheduled_week_start,
+            id
+        FROM tasks
+        """
+    )
+
+    for row in conn.execute("SELECT id, title FROM tasks_new").fetchall():
+        conn.execute(
+            "UPDATE tasks_new SET slug = ? WHERE id = ?",
+            (_slugify(row["title"], row["id"]), row["id"]),
+        )
+
+    conn.execute("DROP TABLE tasks")
+    conn.execute("ALTER TABLE tasks_new RENAME TO tasks")
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_week ON tasks(week_assigned)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_activity "
+        "ON tasks(canonical_activity)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_tasks_deleted ON tasks(deleted_at)"
+    )
+
+
 # Registry of version → callable.  Callables take the connection and
 # perform the migration under the shared transaction handler.
 _MIGRATION_FUNCS: dict[int, Any] = {
     # Version 1 is the initial schema; no migration function needed.
     2: _migrate_v2_time_blocks_to_minutes,
     3: _migrate_v3_task_schedule_and_events,
+    4: _migrate_v4_task_hierarchy,
 }
 
 # Migrations that require ``PRAGMA foreign_keys = OFF`` during execution
@@ -466,7 +720,7 @@ _MIGRATION_FUNCS: dict[int, Any] = {
 # foreign_keys`` is a no-op inside an open transaction, so the pragma
 # must be toggled at the connection level, outside the savepoint the
 # migration runs under.
-_MIGRATIONS_NEEDING_FK_OFF: frozenset[int] = frozenset({3})
+_MIGRATIONS_NEEDING_FK_OFF: frozenset[int] = frozenset({3, 4})
 
 
 # ── Initialization & migration ──────────────────────────────────────────
@@ -536,6 +790,13 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     This is the main entry point for all other modules.  Call once at
     application startup.
 
+    Order matters.  ``_SCHEMA_SQL`` runs first so a fresh database has
+    every table.  Migrations run next.  Indexes and the cycle trigger run
+    **after** migrations, because both reference columns that only exist
+    at v4: creating them earlier would fail on a pre-v4 database, and
+    creating the trigger inside the v4 migration would not help a fresh
+    database (which skips that migration) or survive the rebuild's DROP.
+
     Args:
         db_path: Override the default database location.
 
@@ -544,8 +805,9 @@ def init_db(db_path: Path | None = None) -> sqlite3.Connection:
     """
     conn = get_connection(db_path)
     conn.executescript(_SCHEMA_SQL)
-    conn.executescript(_INDEX_SQL)
     _apply_migrations(conn)
+    conn.executescript(_INDEX_SQL)
+    conn.executescript(_TRIGGER_SQL)
     _seed_defaults(conn)
     return conn
 
