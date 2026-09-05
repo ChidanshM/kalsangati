@@ -52,9 +52,11 @@ class TestTaskCrud:
         assert updated.estimated_hours == 5.0
 
     def test_delete(self, conn: sqlite3.Connection) -> None:
+        """Soft delete: the task is hidden, not removed."""
         t = create(conn, "Delete me", "act")
         delete(conn, t.id)
         assert get_by_id(conn, t.id) is None
+        assert get_by_id(conn, t.id, include_deleted=True) is not None
 
     def test_set_status(self, conn: sqlite3.Connection) -> None:
         t = create(conn, "Progress", "act")
@@ -570,6 +572,8 @@ class TestEventTypes:
             "started", "planned", "backlogged",
             # P2U03 hierarchy verb (reparent_task service).
             "reparented",
+            # P2U04 soft-deletion verbs (delete_task service).
+            "deleted", "undeleted",
         }
         # Exact equality on purpose: an accidental addition should fail
         # here.  When the vocabulary grows deliberately, update this set
@@ -681,21 +685,33 @@ class TestEventLogging:
             None, "first", "second", "third",
         ]
 
-    def test_delete_cascades_to_events(
+    def test_delete_preserves_events(
         self, conn: sqlite3.Connection
     ) -> None:
+        """Soft deletion keeps the history.
+
+        This replaces an earlier test asserting the opposite — that the
+        FK ``ON DELETE CASCADE`` wiped `task_events` when the row was
+        removed.  That cascade was the defect `deleted_at` exists to
+        avoid, so the inverse assertion is the point of the change
+        rather than a casualty of it.
+
+        Note this is the *core* primitive, which does not cascade to
+        children and logs no event; use
+        ``services.delete_task.delete_task`` for user-facing deletion.
+        """
         t = create(conn, "to delete", "act")
         log_task_event(conn, t.id, "assigned")
         log_task_event(conn, t.id, "ended")
-        # sanity: 3 events exist (1 auto-created + 2 manual)
         assert len(get_task_events(conn, t.id)) == 3
+
         delete(conn, t.id)
-        # All gone: FK ON DELETE CASCADE.
+
         remaining = conn.execute(
             "SELECT COUNT(*) FROM task_events WHERE task_id = ?",
             (t.id,),
         ).fetchone()[0]
-        assert remaining == 0
+        assert remaining == 3
 
 
 # ── v3: update() allows the new scheduled_* fields ─────────────────────

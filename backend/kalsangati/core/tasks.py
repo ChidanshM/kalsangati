@@ -104,6 +104,9 @@ EVENT_TYPES: frozenset[str] = frozenset({
     "backlogged",  # returning to backlog manually (cf. automatic "spilled")
     # Hierarchy verbs (P2U03, reparent_task service).
     "reparented",  # parent_id changed, including promotion to root
+    # Soft-deletion verbs (P2U04, delete_task service).
+    "deleted",  # marked deleted; notes distinguish direct from cascaded
+    "undeleted",  # restored
 })
 
 
@@ -416,13 +419,31 @@ def update(
 
 
 def delete(conn: sqlite3.Connection, task_id: int) -> None:
-    """Delete a task.
+    """Soft-delete a single task row.
+
+    Sets ``deleted_at``.  The row and its ``task_events`` history
+    survive; every read in this module filters ``deleted_at IS NULL``,
+    so the task disappears from all views.
+
+    **This does not cascade and logs no event.**  Deleting a task with
+    children through this function leaves them live and orphaned —
+    unreachable in any tree view, yet still present in flat lists and
+    still consuming capacity.  It is the low-level primitive.
+
+    **Callers should use**
+    :func:`kalsangati.services.delete_task.delete_task`, which marks the
+    whole subtree, writes one audit event per affected row, and can be
+    undone.
 
     Args:
         conn: Database connection.
         task_id: Row id.
     """
-    conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+    now = datetime.now().isoformat(sep=" ", timespec="seconds")
+    conn.execute(
+        "UPDATE tasks SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL",
+        (now, task_id),
+    )
     conn.commit()
 
 
