@@ -42,14 +42,12 @@ from kalsangati.core.tasks import (
     create as create_task,
 )
 from kalsangati.core.tasks import (
-    delete as delete_task,
-)
-from kalsangati.core.tasks import (
     get_all as get_all_tasks,
 )
 from kalsangati.core.tasks import (
     update as update_task,
 )
+from kalsangati.services.delete_task import delete_task
 from kalsangati.services.update_task_status import (
     allowed_transitions,
     update_task_status,
@@ -302,12 +300,29 @@ class TaskPlanner(QWidget):
         self._apply_status(tid, "done")
 
     def _on_delete(self) -> None:
+        """Soft-delete the selected task and its subtree.
+
+        Routes through the service rather than ``core.tasks.delete``:
+        the backlog list is flat, so a parent can be selected here, and
+        the core primitive does not cascade — it would leave children
+        live and orphaned.  Deletion is reversible, so there is no
+        confirmation dialog.
+        """
         item = self._backlog_list.currentItem()
         if item is None:
             return
         tid = item.data(Qt.ItemDataRole.UserRole)
-        delete_task(self._conn, tid)
-        self.refresh()
+        try:
+            delete_task(self._conn, tid)
+        except KalsangatiError as e:
+            QMessageBox.warning(self, "Cannot delete task", str(e))
+        except Exception:
+            logger.exception("Unexpected error deleting task %s", tid)
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
 
 
 class _NewTaskDialog(QDialog):

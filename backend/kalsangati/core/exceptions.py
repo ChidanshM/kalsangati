@@ -158,3 +158,20 @@ class TaskCycleError(KalsangatiError):
     :class:`InvalidTaskScheduleError` follows.  The trigger remains the
     backstop for every path that is not this service.
     """
+
+
+class TaskNotRestorableError(KalsangatiError):
+    """Raised when a soft-deleted task cannot be restored on its own.
+
+    Surfaces from
+    :func:`kalsangati.services.delete_task.undelete_task` when one of the
+    task's ancestors is itself deleted.  Restoring the task alone would
+    leave it live under a deleted parent: unreachable in any tree view,
+    yet present in flat lists and consuming capacity.
+
+    The message names the deleted ancestor, so the caller knows what to
+    restore instead.  Silently restoring the ancestors as well was
+    rejected deliberately — it would undo a separate deletion the user
+    performed on purpose, which is the same mistake the per-operation
+    delete timestamp exists to prevent.
+    """
