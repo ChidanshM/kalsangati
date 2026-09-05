@@ -568,7 +568,13 @@ class TestEventTypes:
             "on_hold", "resumed", "ended", "spilled",
             # Unit 7 status-transition verbs (update_task_status service).
             "started", "planned", "backlogged",
+            # P2U03 hierarchy verb (reparent_task service).
+            "reparented",
         }
+        # Exact equality on purpose: an accidental addition should fail
+        # here.  When the vocabulary grows deliberately, update this set
+        # rather than loosening the assertion to a subset check
+        # (pitfall #31).
         assert expected == EVENT_TYPES
 
 
