@@ -387,14 +387,35 @@ class TaskPlanner(QWidget):
         self._create_task(parent_id=None)
 
     def _on_add_subtask(self) -> None:
-        """Create a task under the current backlog selection."""
+        """Create a task under the current backlog selection.
+
+        The new task inherits its parent's project and activity as
+        defaults, since a subtask is nearly always part of the same
+        work. Not the due date.
+        """
         parent_id = self._selected_task_id()
         if parent_id is None:
             return
-        self._create_task(parent_id=parent_id)
+        parent = get_task_by_id(self._conn, parent_id)
+        self._create_task(
+            parent_id=parent_id,
+            initial_activity=parent.canonical_activity if parent else None,
+            initial_project_id=parent.project_id if parent else None,
+        )
 
-    def _create_task(self, *, parent_id: int | None) -> None:
-        dlg = _TaskDialog(self._conn, self)
+    def _create_task(
+        self,
+        *,
+        parent_id: int | None,
+        initial_activity: str | None = None,
+        initial_project_id: int | None = None,
+    ) -> None:
+        dlg = _TaskDialog(
+            self._conn,
+            self,
+            initial_activity=initial_activity,
+            initial_project_id=initial_project_id,
+        )
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
             create_task(
@@ -634,6 +655,8 @@ class _TaskDialog(QDialog):
         parent: QWidget | None = None,
         *,
         task: Task | None = None,
+        initial_activity: str | None = None,
+        initial_project_id: int | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Edit Task" if task else "New Task")
@@ -692,6 +715,21 @@ class _TaskDialog(QDialog):
         if task is not None:
             tabs.addTab(self._build_notes_tab(task), "Notes")
             self._prefill(task)
+        else:
+            # Create mode: seed from whatever the caller knows.  A
+            # subtask passes its parent's project and activity, because
+            # a subtask is nearly always part of the same work.
+            # Overridable — a "buy a whiteboard" subtask under a
+            # learning task should still be able to be a chore.  The
+            # parent's due date is deliberately not inherited: that is a
+            # commitment about one piece of work, not a description of
+            # what kind of work it is.
+            if initial_project_id is not None:
+                index = self._project_combo.findData(initial_project_id)
+                if index >= 0:
+                    self._project_combo.setCurrentIndex(index)
+            if initial_activity:
+                self._activity.setText(initial_activity)
 
     def _build_notes_tab(self, task: Task) -> QWidget:
         """The Markdown body, loaded from disk.

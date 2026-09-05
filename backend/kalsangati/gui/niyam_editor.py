@@ -40,6 +40,7 @@ from kalsangati.core.niyam import (
     time_str_to_minutes,
     update_blocks,
 )
+from kalsangati.infrastructure.signals import app_signals
 from kalsangati.services.set_active_niyam import set_active_niyam
 
 logger = logging.getLogger(__name__)
@@ -70,6 +71,12 @@ class NiyamEditor(QWidget):
         self._conn = conn
         self._current_niyam: Niyam | None = None
         self._activity_color_map: dict[str, str] = {}
+        # Forward this widget's signal onto the application bus, so a
+        # screen that cares about Niyam changes does not have to know
+        # this editor exists.  Signal-to-signal, so the two existing
+        # emit sites (save, activate) need no change and the local
+        # signal keeps working for anything wired directly.
+        self.niyam_changed.connect(app_signals().niyam_changed)
         self._build_ui()
         self._refresh_niyam_list()
 

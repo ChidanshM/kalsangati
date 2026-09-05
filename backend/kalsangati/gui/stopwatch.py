@@ -21,10 +21,11 @@ from __future__ import annotations
 import logging
 import sqlite3
 import time
+from contextlib import suppress
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QFont
+from PyQt5.QtGui import QCloseEvent, QFont
 from PyQt5.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -38,6 +39,7 @@ from PyQt5.QtWidgets import (
 from kalsangati.core.exceptions import KalsangatiError
 from kalsangati.core.niyam import get_active
 from kalsangati.core.tasks import check_block_alignment
+from kalsangati.infrastructure.signals import app_signals
 from kalsangati.services.commit_stopwatch_session import (
     commit_stopwatch_session,
 )
@@ -63,6 +65,7 @@ class StopwatchWidget(QWidget):
         self._session_start: datetime | None = None
         self._session_monotonic_start: float | None = None
         self._current_activity: str | None = None
+        self._task_activity: dict[int, str] = {}
 
         self.setWindowTitle("Kālsangati Stopwatch")
         # Normal top-level window. Qt.Tool + WindowStaysOnTopHint had
@@ -72,18 +75,55 @@ class StopwatchWidget(QWidget):
         self.setWindowFlags(Qt.WindowType.Window)
         self.move(300, 300)  # visible starting position, not (0,0)
         self.setFixedWidth(320)
+        # Without an explicit height the window manager stretched this
+        # to the full screen, leaving the timer floating in a void with
+        # the controls crushed at the bottom.
+        self.resize(320, 360)
         self._build_ui()
 
         # Timer for display updates
         self._tick_timer = QTimer(self)
         self._tick_timer.timeout.connect(self._tick)
 
-        # Refresh activities periodically
+        # Periodic activity refresh — **kept, deliberately not started.**
+        #
+        # It existed because nothing told the stopwatch when the Niyam
+        # changed.  The bus does that now, so polling every 30 seconds
+        # is redundant work that also, before the signal-blocking fix,
+        # was actively destructive.
+        #
+        # Retained rather than deleted because the signal only fires
+        # when *this process* edits the Niyam.  A database changed from
+        # outside — a script, a second instance, an import — would go
+        # unnoticed.  Calling ``self._activity_timer.start(30_000)``
+        # brings polling back if that turns out to matter; a proper
+        # answer would be a reload action or a file watcher rather than
+        # a poll that happens to catch it.
         self._activity_timer = QTimer(self)
         self._activity_timer.timeout.connect(self._refresh_activities)
-        self._activity_timer.start(30_000)
+
+        # Reload when the Niyam changes, wherever that happened.
+        app_signals().niyam_changed.connect(self._refresh_activities)
 
         self._refresh_activities()
+
+    def closeEvent(self, event: QCloseEvent | None) -> None:  # noqa: N802
+        """Detach from the bus before the widget goes away.
+
+        A signal connected to a method on a deleted Qt object is a
+        crash, not an exception — and the bus outlives every widget on
+        it, so nothing else would ever drop the connection.
+
+        Spelled the way Qt calls it: ``closeEvent``, not
+        ``close_event`` (pitfall #32, which cost a whole shutdown path
+        going silently unrun).  The parameter is optional because PyQt5
+        types it that way; narrowing it would be a Liskov violation.
+        """
+        with suppress(TypeError):
+            # Qt raises rather than no-opping if already disconnected,
+            # and a widget can be closed twice.
+            app_signals().niyam_changed.disconnect(self._refresh_activities)
+        super().closeEvent(event)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -105,6 +145,7 @@ class StopwatchWidget(QWidget):
         # Task selector (block-aware)
         self._task_combo = QComboBox()
         self._task_combo.setPlaceholderText("Select task…")
+        self._task_combo.currentIndexChanged.connect(self._on_task_changed)
         layout.addWidget(self._task_combo)
 
         # Buttons
@@ -125,25 +166,65 @@ class StopwatchWidget(QWidget):
         self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(self._status_label)
 
+        # Pack everything to the top.  Stretch around the timer instead
+        # is what produced the void in a tall window.
+        layout.addStretch(1)
+
     def _refresh_activities(self) -> None:
-        """Populate activity dropdown from the active Niyam."""
+        """Repopulate the activity dropdown from the active Niyam.
+
+        **Signals are blocked for the duration.**  ``clear()`` and
+        ``addItems()`` both emit ``currentTextChanged``, and Qt does not
+        distinguish a programmatic change from a user's click.  Without
+        the block, a refresh landing mid-session reached
+        :meth:`_on_activity_changed` with an empty string, which looks
+        exactly like a quick-switch: the running session was committed
+        and a fresh one started, resetting the monotonic anchor.  On a
+        30-second timer that chopped every session into 30-second
+        segments, each below the service's one-second minimum by the
+        time the next refresh arrived, so a long session recorded
+        nothing at all.
+
+        The selection is reconciled explicitly afterwards, which is what
+        the blocked signals would otherwise have done implicitly and
+        destructively.
+        """
         current = self._activity_combo.currentText()
-        self._activity_combo.clear()
 
-        niyam = get_active(self._conn)
-        if niyam:
-            activities = sorted(niyam.activity_set)
-            self._activity_combo.addItems(activities)
+        self._activity_combo.blockSignals(True)
+        try:
+            self._activity_combo.clear()
+            niyam = get_active(self._conn)
+            if niyam:
+                self._activity_combo.addItems(sorted(niyam.activity_set))
+            idx = self._activity_combo.findText(current)
+            if idx >= 0:
+                self._activity_combo.setCurrentIndex(idx)
+        finally:
+            self._activity_combo.blockSignals(False)
 
-        # Restore selection
-        idx = self._activity_combo.findText(current)
-        if idx >= 0:
-            self._activity_combo.setCurrentIndex(idx)
+        # If the selection survived, nothing changed and the running
+        # session must not be disturbed.  If it did not, tell the rest
+        # of the widget once, deliberately.
+        if self._activity_combo.currentText() != current:
+            self._on_activity_changed(self._activity_combo.currentText())
+        else:
+            self._refresh_tasks()
 
     def _on_activity_changed(self, activity: str) -> None:
-        """Update task dropdown when activity changes; handle quick-switch."""
+        """Handle a real activity change, including quick-switch.
+
+        An empty string is not an activity.  It arrives when the combo
+        is emptied, and treating it as one committed the running session
+        against ``activity=""`` — rejected by the service's minimum
+        duration, but only by luck; a longer segment would have written
+        a row with no activity at all.
+        """
+        if not activity:
+            return
+
         if self._is_running and self._current_activity != activity:
-            # Quick-switch: end current segment, start new one
+            # Quick-switch: end the current segment, start a new one.
             self._end_session()
             self._current_activity = activity
             self._start_session()
@@ -152,28 +233,76 @@ class StopwatchWidget(QWidget):
         self._refresh_tasks()
 
     def _refresh_tasks(self) -> None:
-        """Populate task dropdown based on current activity."""
-        self._task_combo.clear()
-        self._task_combo.addItem("(no task)")
+        """Populate task dropdown based on current activity.
 
-        activity = self._activity_combo.currentText()
-        if not activity:
+        Signals blocked for the same reason as the activity combo:
+        ``clear()`` emits a selection change, which would bounce
+        straight back into :meth:`_on_task_changed`.
+        """
+        self._task_combo.blockSignals(True)
+        try:
+            self._task_combo.clear()
+            self._task_activity.clear()
+            self._task_combo.addItem("(no task)")
+
+            activity = self._activity_combo.currentText()
+            if not activity:
+                return
+
+            rows = self._conn.execute(
+                "SELECT id, title, canonical_activity FROM tasks "
+                "WHERE status IN ('this_week', 'in_progress') "
+                "AND deleted_at IS NULL "
+                "ORDER BY CASE WHEN canonical_activity = ? THEN 0 ELSE 1 END, "
+                "         COALESCE(due_date, '9999-12-31'), title",
+                (activity,),
+            ).fetchall()
+
+            for row in rows:
+                label = row["title"]
+                if row["canonical_activity"] != activity:
+                    label = f"⚫ {label} [{row['canonical_activity']}]"
+                self._task_combo.addItem(label, row["id"])
+                self._task_activity[row["id"]] = row["canonical_activity"]
+        finally:
+            self._task_combo.blockSignals(False)
+
+    def _on_task_changed(self, _index: int) -> None:
+        """Adopt the selected task's activity.
+
+        A task already knows what kind of time it is, so picking one
+        should not then require picking its activity as well — the same
+        overridable-default rule as project to task and parent to
+        subtask.
+
+        **Only while stopped.**  Changing the activity mid-session means
+        a quick-switch, which ends the running segment; doing that as a
+        side effect of picking a task would be a surprising way to lose
+        time.  Switch activity explicitly instead.
+
+        Does nothing if the task's activity is not in the dropdown —
+        that is, not in the active Niyam. Adding it silently would put
+        unprescribed activities into a list whose purpose is to show
+        what was planned.
+        """
+        if self._is_running:
+            return
+        task_data = self._task_combo.currentData()
+        if not isinstance(task_data, int):
+            return
+        activity = self._task_activity.get(task_data)
+        if not activity or activity == self._activity_combo.currentText():
+            return
+        index = self._activity_combo.findText(activity)
+        if index < 0:
             return
 
-        # Fetch tasks for this activity
-        rows = self._conn.execute(
-            "SELECT id, title, canonical_activity FROM tasks "
-            "WHERE status IN ('this_week', 'in_progress') "
-            "ORDER BY CASE WHEN canonical_activity = ? THEN 0 ELSE 1 END, "
-            "         COALESCE(due_date, '9999-12-31'), title",
-            (activity,),
-        ).fetchall()
-
-        for row in rows:
-            label = row["title"]
-            if row["canonical_activity"] != activity:
-                label = f"⚫ {label} [{row['canonical_activity']}]"
-            self._task_combo.addItem(label, row["id"])
+        # Blocked: _on_activity_changed would repopulate the task combo
+        # and discard the selection just made.
+        self._activity_combo.blockSignals(True)
+        self._activity_combo.setCurrentIndex(index)
+        self._activity_combo.blockSignals(False)
+        self._current_activity = activity
 
     def _toggle(self) -> None:
         """Start or stop the timer."""
@@ -254,7 +383,11 @@ class StopwatchWidget(QWidget):
         cleared before the service call so a failure never leaves the
         widget believing it is still mid-session.
         """
-        if self._session_start is None or self._current_activity is None:
+        # An empty activity is not a session.  ``_current_activity``
+        # can only be "" if something set it from an emptied combo,
+        # which is the bug this guard closes rather than a state worth
+        # committing.
+        if self._session_start is None or not self._current_activity:
             return
 
         start = self._session_start
