@@ -38,6 +38,7 @@ from kalsangati.gui.stopwatch import StopwatchWidget
 from kalsangati.gui.task_planner import TaskPlanner
 from kalsangati.infrastructure.logging_config import setup_logging
 from kalsangati.infrastructure.notifications import NotificationScheduler
+from kalsangati.infrastructure.server import start_embedded_server
 from kalsangati.persistence.db import get_setting, init_db
 
 logger = logging.getLogger(__name__)
@@ -224,6 +225,17 @@ def main() -> None:
     app = QApplication(sys.argv)
     app.setApplicationName("Kālsangati")
     logger.info("Kālsangati starting — logging to %s", log_path or "console only")
+
+    # Embedded read API.  Daemon thread, so it dies with this process
+    # (principle 4).  A busy port yields a not-running handle rather
+    # than raising: the desktop application must start regardless.
+    api = start_embedded_server()
+    if api.running:
+        logger.info("Embedded API available at %s", api.base_url)
+        logger.info("API token: %s", api.token)
+    else:
+        logger.warning("Embedded API not available on port %s", api.port)
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
