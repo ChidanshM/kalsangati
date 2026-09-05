@@ -7,6 +7,7 @@ Kālachakra boundary spillover logic.
 
 from __future__ import annotations
 
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -24,6 +25,18 @@ class Task:
     The four ``scheduled_*`` fields are either all None (backlog task)
     or all populated (task placed on the weekly calendar).  The
     all-or-nothing invariant is enforced by a DB-level CHECK.
+
+    The five v4 fields at the end (``parent_id`` through ``sort_order``)
+    carry the task hierarchy.  ``parent_id`` is NULL for a root task;
+    ``slug`` is a filename-safe form of the title, fixed at creation;
+    ``notes_path`` overrides the derived Markdown path when set;
+    ``deleted_at`` is NULL for a live task; ``sort_order`` positions a
+    task among its siblings.
+
+    **Construct with keyword arguments only** (pitfall #25):
+    ``@dataclass(slots=True)`` does not check types at runtime, so a
+    positional construction silently mis-assigns every field after the
+    first one that moved.
     """
 
     id: int
@@ -32,7 +45,7 @@ class Task:
     canonical_activity: str
     estimated_hours: float | None
     due_date: str | None
-    status: str  # backlog | this_week | in_progress | on_hold | done
+    status: str  # backlog | this_week | in_progress | on_hold | done | dropped
     week_assigned: str | None
     spilled_from: str | None
     override_reason: str | None
@@ -42,6 +55,12 @@ class Task:
     scheduled_start_min: int | None
     scheduled_end_min: int | None
     scheduled_week_start: str | None
+    # ── v4 hierarchy fields ──
+    parent_id: int | None
+    slug: str | None
+    notes_path: str | None
+    deleted_at: str | None
+    sort_order: float
 
 
 @dataclass(slots=True)
@@ -131,6 +150,11 @@ def _row_to_task(row: sqlite3.Row) -> Task:
         scheduled_start_min=row["scheduled_start_min"],
         scheduled_end_min=row["scheduled_end_min"],
         scheduled_week_start=row["scheduled_week_start"],
+        parent_id=row["parent_id"],
+        slug=row["slug"],
+        notes_path=row["notes_path"],
+        deleted_at=row["deleted_at"],
+        sort_order=row["sort_order"],
     )
 
 
@@ -150,12 +174,50 @@ def _row_to_event(row: sqlite3.Row) -> TaskEvent:
 # ── CRUD ────────────────────────────────────────────────────────────────
 
 
+# Maximum length of a generated slug.  A slug is a filename readability
+# hint, not an identifier — the row id is the identifier — so truncating
+# is safe.
+SLUG_MAX_LEN: int = 42
+
+
+def slugify(title: str, task_id: int) -> str:
+    """Convert a title into a filename-safe slug.
+
+    Non-ASCII characters are dropped rather than transliterated, so a
+    title with no ASCII at all yields an empty slug and falls back to
+    ``task-{id}``.  The real title lives in the ``title`` column; this is
+    only a readability hint for the eventual notes filename.
+
+    **Deliberately duplicated** by the private ``_slugify`` in
+    ``persistence/db.py``, which the v4 migration uses to backfill
+    existing rows.  ``persistence/`` imports nothing internal — that leaf
+    invariant is what the layer split rests on — so it cannot call this
+    function.  Divergence between the two is expected rather than a bug:
+    a migration is frozen history and must keep producing what it
+    produced on the day it ran, while this one is free to evolve.
+
+    Args:
+        title: The task title, any content.
+        task_id: Row id, used only for the fallback.
+
+    Returns:
+        A lowercase hyphenated slug of at most ``SLUG_MAX_LEN``
+        characters, never empty.
+    """
+    ascii_only = title.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^A-Za-z0-9]+", "-", ascii_only).strip("-").lower()
+    # rstrip again: truncation can land on a hyphen.
+    slug = slug[:SLUG_MAX_LEN].rstrip("-")
+    return slug or f"task-{task_id}"
+
+
 def get_all(
     conn: sqlite3.Connection,
     *,
     status: str | None = None,
     activity: str | None = None,
     week: str | None = None,
+    include_deleted: bool = False,
 ) -> list[Task]:
     """Query tasks with optional filters.
 
@@ -164,12 +226,16 @@ def get_all(
         status: Filter by status.
         activity: Filter by canonical_activity.
         week: Filter by week_assigned.
+        include_deleted: Return soft-deleted rows as well.  Off by
+            default; the undelete path is the reason it exists.
 
     Returns:
         List of matching tasks, ordered by due_date then title.
     """
     clauses: list[str] = []
     params: list[str] = []
+    if not include_deleted:
+        clauses.append("deleted_at IS NULL")
     if status:
         clauses.append("status = ?")
         params.append(status)
@@ -189,19 +255,26 @@ def get_all(
     return [_row_to_task(r) for r in rows]
 
 
-def get_by_id(conn: sqlite3.Connection, task_id: int) -> Task | None:
+def get_by_id(
+    conn: sqlite3.Connection,
+    task_id: int,
+    *,
+    include_deleted: bool = False,
+) -> Task | None:
     """Fetch a task by primary key.
 
     Args:
         conn: Database connection.
         task_id: Row id.
+        include_deleted: Return the row even if soft-deleted.
 
     Returns:
         A Task, or None.
     """
-    row = conn.execute(
-        "SELECT * FROM tasks WHERE id = ?", (task_id,)
-    ).fetchone()
+    sql = "SELECT * FROM tasks WHERE id = ?"
+    if not include_deleted:
+        sql += " AND deleted_at IS NULL"
+    row = conn.execute(sql, (task_id,)).fetchone()
     return _row_to_task(row) if row else None
 
 
@@ -211,6 +284,7 @@ def create(
     canonical_activity: str,
     *,
     project_id: int | None = None,
+    parent_id: int | None = None,
     estimated_hours: float | None = None,
     due_date: str | None = None,
     status: str = "backlog",
@@ -219,11 +293,24 @@ def create(
 ) -> Task:
     """Create a new task.
 
+    The task is placed **last among its siblings**: ``sort_order`` is one
+    more than the highest among tasks sharing the same ``parent_id``, so
+    root tasks and each parent's children keep independent sequences.
+
+    ``slug`` is generated from the title after the INSERT, because the
+    fallback needs the row id.  Both statements run inside one savepoint,
+    so a task can never be left without a slug.
+
+    No cycle check is needed here: a brand-new row's id cannot appear in
+    any existing ancestor chain, which is why ``trg_tasks_no_cycle``
+    fires on UPDATE only.
+
     Args:
         conn: Database connection.
         title: Task title.
         canonical_activity: Activity this task belongs to.
         project_id: Optional parent project.
+        parent_id: Optional parent task, making this a subtask.
         estimated_hours: Estimated time to complete.
         due_date: Target date (YYYY-MM-DD).
         status: Initial status.
@@ -232,19 +319,42 @@ def create(
 
     Returns:
         The newly created Task.
+
+    Raises:
+        sqlite3.IntegrityError: If ``parent_id`` names a task that does
+            not exist (FK violation).
     """
     now = datetime.now().isoformat(sep=" ", timespec="seconds")
     with transaction(conn) as cur:
+        # `IS`, not `=`: comparing against NULL with `=` is never true,
+        # so `parent_id = NULL` matches no rows and every root task
+        # would collide on sort_order 1.  SQLite's IS treats NULL as a
+        # value.
+        order_row = cur.execute(
+            "SELECT COALESCE(MAX(sort_order), 0) + 1 AS next_order "
+            "FROM tasks WHERE parent_id IS ?",
+            (parent_id,),
+        ).fetchone()
+        next_order: float = order_row["next_order"]
+
         cur.execute(
             "INSERT INTO tasks "
             "(title, project_id, canonical_activity, estimated_hours, "
-            " due_date, status, week_assigned, notes, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " due_date, status, week_assigned, notes, created_at, "
+            " parent_id, sort_order) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (title, project_id, canonical_activity, estimated_hours,
-             due_date, status, week_assigned, notes, now),
+             due_date, status, week_assigned, notes, now,
+             parent_id, next_order),
         )
         tid = cur.lastrowid
         assert tid is not None  # guaranteed after a successful INSERT
+        # slug needs the row id for its fallback, so it lands in a second
+        # statement — inside the same savepoint, so the pair is atomic.
+        cur.execute(
+            "UPDATE tasks SET slug = ? WHERE id = ?",
+            (slugify(title, tid), tid),
+        )
         # Auto-log the ``created`` event in the same savepoint so the
         # task row and its first history entry are atomic.  Snapshot
         # columns are NULL: a freshly created task has no schedule.
@@ -277,7 +387,16 @@ def update(
         "override_reason", "notes",
         "scheduled_day", "scheduled_start_min", "scheduled_end_min",
         "scheduled_week_start",
+        "notes_path", "sort_order",
     }
+    # Deliberately absent, and each for a reason:
+    #   parent_id  — reparent_task owns it; it needs a cycle check and an
+    #                audit event, and a second write path would bypass both.
+    #   deleted_at — the soft-delete service owns it, same reasoning.
+    #   slug       — fixed at creation by design.  Renaming a task changes
+    #                its title and its note's heading; the filename stays put.
+    # Unknown keys are silently skipped below, so passing one is a no-op
+    # rather than an error.
     fields: list[str] = []
     params: list[str | int | float | None] = []
     for key, val in kwargs.items():
@@ -458,7 +577,9 @@ def capacity_for_activity(
     ).fetchone()
     logged = row["hours"] if row else 0.0
 
-    # Assigned estimated hours
+    # Assigned estimated hours.  Soft-deleted tasks do not consume
+    # capacity — the filter ships with the column rather than after it,
+    # so no audit of this file is needed when deletion goes live.
     row2 = conn.execute(
         """
         SELECT COALESCE(SUM(estimated_hours), 0) AS hours
@@ -466,6 +587,7 @@ def capacity_for_activity(
         WHERE canonical_activity = ?
           AND week_assigned = ?
           AND status IN ('this_week', 'in_progress')
+          AND deleted_at IS NULL
         """,
         (activity, ws),
     ).fetchone()
@@ -504,7 +626,7 @@ def all_capacities(
 
     rows = conn.execute(
         "SELECT DISTINCT canonical_activity FROM tasks "
-        "WHERE week_assigned = ?",
+        "WHERE week_assigned = ? AND deleted_at IS NULL",
         (ws,),
     ).fetchall()
     activities.update(r["canonical_activity"] for r in rows)
@@ -543,6 +665,7 @@ def process_spillover(
                 week_assigned = NULL
             WHERE week_assigned = ?
               AND status IN ('this_week', 'in_progress')
+              AND deleted_at IS NULL
             """,
             (week_start,),
         )
