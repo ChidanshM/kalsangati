@@ -15,6 +15,7 @@ import pytest
 
 from kalsangati.core.tasks import (
     EVENT_TYPES,
+    SLUG_MAX_LEN,
     create,
     delete,
     get_all,
@@ -23,9 +24,11 @@ from kalsangati.core.tasks import (
     log_task_event,
     process_spillover,
     set_status,
+    slugify,
     update,
 )
 from kalsangati.persistence.db import SCHEMA_VERSION, init_db
+from kalsangati.persistence.db import _slugify as _db_slugify
 
 
 class TestTaskCrud:
@@ -266,6 +269,275 @@ class TestScheduleCheckConstraint:
 
 
 # ── v3: status enum expansion ──────────────────────────────────────────
+
+
+# ── v4: hierarchy fields on Task ─────────────────────────────────
+
+
+class TestV4Fields:
+    """Task carries parent_id / slug / notes_path / deleted_at /
+    sort_order, and both row mappers read them."""
+
+    def test_defaults_on_plain_create(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "Write the report", "01-02-el")
+        assert t.parent_id is None
+        assert t.notes_path is None
+        assert t.deleted_at is None
+        assert t.slug == "write-the-report"
+        assert t.sort_order > 0
+
+    def test_fields_round_trip_through_get_by_id(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        parent = create(conn, "Parent", "act")
+        child = create(conn, "Child", "act", parent_id=parent.id)
+        update(conn, child.id, notes_path="custom/path.md")
+        fetched = get_by_id(conn, child.id)
+        assert fetched is not None
+        assert fetched.parent_id == parent.id
+        assert fetched.notes_path == "custom/path.md"
+        assert fetched.slug == "child"
+
+
+class TestSlugify:
+    def test_ordinary_title(self) -> None:
+        assert slugify("Write the report", 1) == "write-the-report"
+
+    def test_punctuation_collapses(self) -> None:
+        assert slugify("CIS731: problem set #4!", 1) == (
+            "cis731-problem-set-4"
+        )
+
+    def test_truncated_to_limit(self) -> None:
+        assert len(slugify("x" * 100, 1)) == SLUG_MAX_LEN
+
+    def test_truncation_leaves_no_trailing_hyphen(self) -> None:
+        assert not slugify("a" * SLUG_MAX_LEN + " tail", 1).endswith("-")
+
+    def test_non_ascii_falls_back_to_id(self) -> None:
+        assert slugify("कालसंगति", 7) == "task-7"
+
+    def test_punctuation_only_falls_back_to_id(self) -> None:
+        assert slugify("!!! ???", 9) == "task-9"
+
+    def test_empty_title_falls_back_to_id(self) -> None:
+        assert slugify("", 3) == "task-3"
+
+    def test_mixed_script_keeps_ascii(self) -> None:
+        assert slugify("Read Vimarśa chapter", 1) == "read-vimara-chapter"
+
+    def test_agrees_with_migration_helper_today(self) -> None:
+        """Documents a deliberate duplication, not a coupling.
+
+        ``persistence/db.py`` carries its own private ``_slugify``
+        because that layer imports nothing internal.  The two agree
+        today.  When they legitimately diverge — a migration is frozen
+        history and must keep producing what it produced on the day it
+        ran — **delete this test**, do not "fix" either function.
+        """
+        for title in (
+            "Write the report", "CIS731: problem set #4!", "कालसंगति",
+            "", "!!!", "x" * 100, "Read Vimarśa chapter",
+        ):
+            assert slugify(title, 5) == _db_slugify(title, 5)
+
+
+class TestSortOrder:
+    def test_roots_increment(self, conn: sqlite3.Connection) -> None:
+        a = create(conn, "A", "act")
+        b = create(conn, "B", "act")
+        c = create(conn, "C", "act")
+        assert [a.sort_order, b.sort_order, c.sort_order] == [1.0, 2.0, 3.0]
+
+    def test_children_are_scoped_to_their_parent(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """The test that catches ``parent_id = ?`` instead of ``IS ?``.
+
+        With ``=``, comparing against NULL is never true, so the sibling
+        query returns nothing, every task falls back to 1, and roots and
+        children share one sequence.  Here the child must be 1 while the
+        two roots are 1 and 2.
+        """
+        root_a = create(conn, "Root A", "act")
+        root_b = create(conn, "Root B", "act")
+        child = create(conn, "Child of A", "act", parent_id=root_a.id)
+        assert root_a.sort_order == 1.0
+        assert root_b.sort_order == 2.0
+        assert child.sort_order == 1.0
+
+    def test_siblings_under_one_parent_increment(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        p = create(conn, "Parent", "act")
+        first = create(conn, "First", "act", parent_id=p.id)
+        second = create(conn, "Second", "act", parent_id=p.id)
+        assert [first.sort_order, second.sort_order] == [1.0, 2.0]
+
+    def test_different_parents_each_start_at_one(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        p1 = create(conn, "P1", "act")
+        p2 = create(conn, "P2", "act")
+        c1 = create(conn, "C1", "act", parent_id=p1.id)
+        c2 = create(conn, "C2", "act", parent_id=p2.id)
+        assert c1.sort_order == 1.0
+        assert c2.sort_order == 1.0
+
+
+class TestParentOnCreate:
+    def test_child_records_its_parent(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        p = create(conn, "Parent", "act")
+        c = create(conn, "Child", "act", parent_id=p.id)
+        assert c.parent_id == p.id
+
+    def test_depth_three_is_allowed(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        # Depth is deliberately uncapped; three levels is only a sample.
+        a = create(conn, "A", "act")
+        b = create(conn, "B", "act", parent_id=a.id)
+        c = create(conn, "C", "act", parent_id=b.id)
+        assert c.parent_id == b.id
+        fetched_b = get_by_id(conn, b.id)
+        assert fetched_b is not None
+        assert fetched_b.parent_id == a.id
+
+    def test_nonexistent_parent_rejected(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        with pytest.raises(sqlite3.IntegrityError):
+            create(conn, "Orphan", "act", parent_id=99999)
+
+
+class TestSoftDeleteFiltering:
+    """Nothing sets ``deleted_at`` yet; these use raw SQL to prove the
+    filter works before the writer that needs it exists."""
+
+    @staticmethod
+    def _mark_deleted(conn: sqlite3.Connection, task_id: int) -> None:
+        conn.execute(
+            "UPDATE tasks SET deleted_at = ? WHERE id = ?",
+            ("2026-09-04 12:00:00", task_id),
+        )
+        conn.commit()
+
+    def test_get_by_id_hides_deleted(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "Gone", "act")
+        self._mark_deleted(conn, t.id)
+        assert get_by_id(conn, t.id) is None
+
+    def test_get_by_id_include_deleted_returns_it(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "Gone", "act")
+        self._mark_deleted(conn, t.id)
+        fetched = get_by_id(conn, t.id, include_deleted=True)
+        assert fetched is not None
+        assert fetched.deleted_at == "2026-09-04 12:00:00"
+
+    def test_get_all_hides_deleted(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        live = create(conn, "Live", "act")
+        gone = create(conn, "Gone", "act")
+        self._mark_deleted(conn, gone.id)
+        titles = {t.title for t in get_all(conn)}
+        assert titles == {"Live"}
+        assert live.id not in {None}
+
+    def test_get_all_include_deleted_returns_both(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        create(conn, "Live", "act")
+        gone = create(conn, "Gone", "act")
+        self._mark_deleted(conn, gone.id)
+        titles = {t.title for t in get_all(conn, include_deleted=True)}
+        assert titles == {"Live", "Gone"}
+
+    def test_deleted_task_does_not_consume_capacity(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        from kalsangati.core.tasks import capacity_for_activity
+
+        gone = create(
+            conn, "Gone", "act",
+            estimated_hours=5.0, status="this_week",
+            week_assigned="2026-09-07",
+        )
+        before = capacity_for_activity(conn, "act", "2026-09-07")
+        assert before.assigned_hours == 5.0
+        self._mark_deleted(conn, gone.id)
+        after = capacity_for_activity(conn, "act", "2026-09-07")
+        assert after.assigned_hours == 0.0
+
+    def test_deleted_task_does_not_spill(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        gone = create(
+            conn, "Gone", "act",
+            status="this_week", week_assigned="2026-09-07",
+        )
+        self._mark_deleted(conn, gone.id)
+        assert process_spillover(conn, "2026-09-07") == 0
+
+
+class TestUpdateAllowedFields:
+    def test_notes_path_is_writable(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "T", "act")
+        update(conn, t.id, notes_path="notes/03-proj/1-t.md")
+        fetched = get_by_id(conn, t.id)
+        assert fetched is not None
+        assert fetched.notes_path == "notes/03-proj/1-t.md"
+
+    def test_sort_order_is_writable(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "T", "act")
+        update(conn, t.id, sort_order=12.5)
+        fetched = get_by_id(conn, t.id)
+        assert fetched is not None
+        assert fetched.sort_order == 12.5
+
+    def test_parent_id_is_ignored(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """``update()`` skips unknown keys silently, so this is a no-op
+        rather than an error.  reparent_task owns parent_id because the
+        move needs a cycle check and an audit event."""
+        a = create(conn, "A", "act")
+        b = create(conn, "B", "act")
+        update(conn, b.id, parent_id=a.id)
+        fetched = get_by_id(conn, b.id)
+        assert fetched is not None
+        assert fetched.parent_id is None
+
+    def test_deleted_at_is_ignored(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "T", "act")
+        update(conn, t.id, deleted_at="2026-09-04 12:00:00")
+        fetched = get_by_id(conn, t.id)
+        assert fetched is not None
+        assert fetched.deleted_at is None
+
+    def test_slug_is_ignored(self, conn: sqlite3.Connection) -> None:
+        """Slugs are fixed at creation: renaming a task must not move
+        its notes file."""
+        t = create(conn, "Original title", "act")
+        update(conn, t.id, title="Renamed", slug="renamed")
+        fetched = get_by_id(conn, t.id)
+        assert fetched is not None
+        assert fetched.title == "Renamed"
+        assert fetched.slug == "original-title"
 
 
 class TestStatusOnHold:
