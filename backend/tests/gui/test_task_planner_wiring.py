@@ -24,9 +24,13 @@ from collections.abc import Generator  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 import pytest  # noqa: E402
+from PyQt5.QtCore import Qt  # noqa: E402
 from PyQt5.QtWidgets import QApplication, QComboBox, QMessageBox  # noqa: E402
 
-from kalsangati.core.exceptions import InvalidTaskTransitionError  # noqa: E402
+from kalsangati.core.exceptions import (  # noqa: E402
+    InvalidTaskTransitionError,
+    TaskCycleError,
+)
 from kalsangati.core.tasks import create, get_by_id, get_task_events  # noqa: E402
 from kalsangati.gui.task_planner import TaskPlanner  # noqa: E402
 from kalsangati.services.update_task_status import (  # noqa: E402
@@ -176,3 +180,243 @@ class TestApplyStatusEndToEnd:
         assert fresh.status == "done"
         events = get_task_events(conn, task.id)
         assert events[-1].event_type == "ended"
+
+
+# ── Backlog tree construction (P2U05) ──────────────────────────────
+
+
+def _tree_titles(planner: TaskPlanner) -> list[str]:
+    """Top-level item labels, in display order."""
+    tree = planner._backlog_tree
+    return [
+        tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())
+    ]
+
+
+def _child_titles(planner: TaskPlanner, index: int) -> list[str]:
+    item = planner._backlog_tree.topLevelItem(index)
+    return [item.child(i).text(0) for i in range(item.childCount())]
+
+
+class TestBacklogTree:
+    def test_child_nests_under_parent(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        parent = create(conn, "Parent", "01-02-el")
+        create(conn, "Child", "01-02-el", parent_id=parent.id)
+
+        planner.refresh()
+
+        assert planner._backlog_tree.topLevelItemCount() == 1
+        assert _child_titles(planner, 0)[0].startswith("Child")
+
+    def test_three_levels_nest(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        a = create(conn, "A", "01-02-el")
+        b = create(conn, "B", "01-02-el", parent_id=a.id)
+        create(conn, "C", "01-02-el", parent_id=b.id)
+
+        planner.refresh()
+
+        top = planner._backlog_tree.topLevelItem(0)
+        assert top.childCount() == 1
+        assert top.child(0).childCount() == 1
+        assert top.child(0).child(0).text(0).startswith("C")
+
+    def test_siblings_follow_sort_order(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        create(conn, "First", "01-02-el")
+        create(conn, "Second", "01-02-el")
+        create(conn, "Third", "01-02-el")
+
+        planner.refresh()
+
+        titles = _tree_titles(planner)
+        assert titles[0].startswith("First")
+        assert titles[1].startswith("Second")
+        assert titles[2].startswith("Third")
+
+    def test_orphan_renders_at_root(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        """A child whose parent left the backlog must stay visible.
+
+        The query filters ``status="backlog"``, so a parent moved to
+        in_progress is absent from the result set.  Dropping its children
+        would look exactly like the tasks had been deleted.
+        """
+        parent = create(conn, "Parent", "01-02-el")
+        create(conn, "Orphan", "01-02-el", parent_id=parent.id)
+        planner._apply_status(parent.id, "in_progress")
+
+        titles = _tree_titles(planner)
+        assert any(t.startswith("Orphan") for t in titles)
+
+    def test_empty_backlog_is_empty_tree(
+        self, planner: TaskPlanner
+    ) -> None:
+        planner.refresh()
+        assert planner._backlog_tree.topLevelItemCount() == 0
+
+    def test_item_carries_task_id(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        t = create(conn, "Carrier", "01-02-el")
+        planner.refresh()
+        item = planner._backlog_tree.topLevelItem(0)
+        assert item.data(0, Qt.ItemDataRole.UserRole) == t.id
+
+
+# ── Drag to reparent ──────────────────────────────────────────
+
+
+class TestApplyReparent:
+    """The drop handler, tested directly.
+
+    Simulating a Qt drag with QTest mouse events is unreliable; the
+    handler is the unit under test, so it is called directly.
+    """
+
+    def test_move_sets_parent(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        a = create(conn, "A", "01-02-el")
+        b = create(conn, "B", "01-02-el")
+
+        planner._apply_reparent(b.id, a.id)
+
+        fresh = get_by_id(conn, b.id)
+        assert fresh is not None
+        assert fresh.parent_id == a.id
+
+    def test_drop_on_blank_promotes_to_root(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        a = create(conn, "A", "01-02-el")
+        b = create(conn, "B", "01-02-el", parent_id=a.id)
+
+        planner._apply_reparent(b.id, None)
+
+        fresh = get_by_id(conn, b.id)
+        assert fresh is not None
+        assert fresh.parent_id is None
+
+    def test_cycle_warns_and_leaves_data_alone(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        """Dragging a task onto its own descendant.
+
+        The path that makes this widget worth building: the user sees a
+        sentence, and the tree still agrees with the database.
+        """
+        a = create(conn, "A", "01-02-el")
+        b = create(conn, "B", "01-02-el", parent_id=a.id)
+
+        with (
+            patch.object(QMessageBox, "warning") as mock_warning,
+            patch.object(QMessageBox, "critical") as mock_critical,
+        ):
+            planner._apply_reparent(a.id, b.id)
+
+        assert mock_warning.called
+        assert not mock_critical.called
+        fresh = get_by_id(conn, a.id)
+        assert fresh is not None
+        assert fresh.parent_id is None
+
+    def test_domain_error_surfaces_as_warning(
+        self, planner: TaskPlanner
+    ) -> None:
+        with (
+            patch(
+                "kalsangati.gui.task_planner.reparent_task",
+                side_effect=TaskCycleError("nope"),
+            ),
+            patch.object(planner, "refresh") as mock_refresh,
+            patch.object(QMessageBox, "warning") as mock_warning,
+        ):
+            planner._apply_reparent(1, 2)
+
+        assert mock_warning.called
+        assert mock_refresh.called
+
+    def test_unexpected_error_shows_critical(
+        self, planner: TaskPlanner
+    ) -> None:
+        with (
+            patch(
+                "kalsangati.gui.task_planner.reparent_task",
+                side_effect=RuntimeError("boom"),
+            ),
+            patch.object(planner, "refresh") as mock_refresh,
+            patch.object(QMessageBox, "warning") as mock_warning,
+            patch.object(QMessageBox, "critical") as mock_critical,
+        ):
+            planner._apply_reparent(1, 2)
+
+        assert mock_critical.called
+        assert not mock_warning.called
+        assert mock_refresh.called
+
+    def test_tree_redraws_from_the_database(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        """After a successful move the tree reflects the new shape.
+
+        Qt's InternalMove is deliberately not used, so this passing is
+        evidence that refresh() — not the widget — did the redraw.
+        """
+        a = create(conn, "A", "01-02-el")
+        b = create(conn, "B", "01-02-el")
+        planner.refresh()
+        assert planner._backlog_tree.topLevelItemCount() == 2
+
+        planner._apply_reparent(b.id, a.id)
+
+        assert planner._backlog_tree.topLevelItemCount() == 1
+        assert _child_titles(planner, 0)[0].startswith("B")
+
+
+# ── New Subtask ──────────────────────────────────────────────
+
+
+class TestNewSubtask:
+    def test_button_disabled_without_selection(
+        self, planner: TaskPlanner
+    ) -> None:
+        planner.refresh()
+        assert planner._btn_subtask.isEnabled() is False
+
+    def test_button_enabled_with_selection(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        create(conn, "Selectable", "01-02-el")
+        planner.refresh()
+        planner._backlog_tree.setCurrentItem(
+            planner._backlog_tree.topLevelItem(0)
+        )
+        assert planner._btn_subtask.isEnabled() is True
+
+    def test_creates_a_child_of_the_selection(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        parent = create(conn, "Parent", "01-02-el")
+        planner.refresh()
+        planner._backlog_tree.setCurrentItem(
+            planner._backlog_tree.topLevelItem(0)
+        )
+
+        with patch.object(
+            planner, "_create_task"
+        ) as mock_create:
+            planner._on_add_subtask()
+
+        mock_create.assert_called_once_with(parent_id=parent.id)
+
+    def test_noop_without_selection(self, planner: TaskPlanner) -> None:
+        planner.refresh()
+        with patch.object(planner, "_create_task") as mock_create:
+            planner._on_add_subtask()
+        assert not mock_create.called

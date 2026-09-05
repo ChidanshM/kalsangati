@@ -1,6 +1,6 @@
 """Weekly Task Planner — capacity-aware scheduling GUI.
 
-Left: backlog grouped by project.
+Left: backlog as a task tree, subtasks nested under their parent.
 Right: week view per activity with capacity bars, Niyam block anchors,
 tasks under their natural blocks, floating tasks at bottom.
 """
@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+from collections import defaultdict
 
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QDropEvent
 from PyQt5.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QDialog,
     QDialogButtonBox,
@@ -20,8 +23,6 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
-    QListWidget,
-    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -29,6 +30,8 @@ from PyQt5.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -36,6 +39,7 @@ from PyQt5.QtWidgets import (
 from kalsangati.core.exceptions import KalsangatiError
 from kalsangati.core.projects import get_all as get_all_projects
 from kalsangati.core.tasks import (
+    Task,
     all_capacities,
 )
 from kalsangati.core.tasks import (
@@ -48,6 +52,7 @@ from kalsangati.core.tasks import (
     update as update_task,
 )
 from kalsangati.services.delete_task import delete_task
+from kalsangati.services.reparent_task import reparent_task
 from kalsangati.services.update_task_status import (
     allowed_transitions,
     update_task_status,
@@ -78,15 +83,19 @@ class TaskPlanner(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.addWidget(QLabel("Backlog"))
 
-        self._backlog_list = QListWidget()
-        self._backlog_list.setDragEnabled(True)
-        left_layout.addWidget(self._backlog_list)
+        self._backlog_tree = _BacklogTree(self)
+        left_layout.addWidget(self._backlog_tree)
 
         # Task action buttons
         btn_row = QHBoxLayout()
         btn_add = QPushButton("New Task")
         btn_add.clicked.connect(self._on_add_task)
         btn_row.addWidget(btn_add)
+
+        self._btn_subtask = QPushButton("New Subtask")
+        self._btn_subtask.clicked.connect(self._on_add_subtask)
+        self._btn_subtask.setEnabled(False)
+        btn_row.addWidget(self._btn_subtask)
 
         btn_assign = QPushButton("Assign to Week")
         btn_assign.clicked.connect(self._on_assign_to_week)
@@ -99,6 +108,10 @@ class TaskPlanner(QWidget):
         btn_del = QPushButton("Delete")
         btn_del.clicked.connect(self._on_delete)
         btn_row.addWidget(btn_del)
+
+        self._backlog_tree.itemSelectionChanged.connect(
+            self._on_selection_changed
+        )
 
         left_layout.addLayout(btn_row)
         splitter.addWidget(left)
@@ -140,18 +153,72 @@ class TaskPlanner(QWidget):
         self._refresh_week()
 
     def _refresh_backlog(self) -> None:
-        self._backlog_list.clear()
+        """Rebuild the backlog tree from the database.
+
+        Always redraws from scratch — never trusts a drag to have moved
+        anything.  A refused reparent leaves the display and the data
+        agreeing, which is the point.
+        """
+        self._backlog_tree.clear()
         tasks = get_all_tasks(self._conn, status="backlog")
+        present = {t.id for t in tasks}
+
+        by_parent: dict[int | None, list[Task]] = defaultdict(list)
         for t in tasks:
-            label = f"{t.title}"
-            if t.estimated_hours:
-                label += f"  ({t.estimated_hours:.1f}h)"
-            label += f"  [{t.canonical_activity}]"
-            if t.spilled_from:
-                label += " ⟲"
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, t.id)
-            self._backlog_list.addItem(item)
+            # A child whose parent is not in this result set — the parent
+            # is in_progress, done, or deleted — is rendered at root
+            # level rather than dropped.  Dropping it would look exactly
+            # like the task had disappeared.
+            key = t.parent_id if t.parent_id in present else None
+            by_parent[key].append(t)
+
+        for group in by_parent.values():
+            group.sort(key=lambda t: (t.sort_order, t.title))
+
+        seen: set[int] = set()
+
+        def add(parent_item: QTreeWidgetItem | None, task: Task) -> None:
+            # `seen` is unreachable while trg_tasks_no_cycle holds; it
+            # costs nothing and matches the guards in reparent_task and
+            # delete_task.
+            if task.id in seen:
+                return
+            seen.add(task.id)
+            item = QTreeWidgetItem([self._backlog_label(task)])
+            item.setData(0, Qt.ItemDataRole.UserRole, task.id)
+            if parent_item is None:
+                self._backlog_tree.addTopLevelItem(item)
+            else:
+                parent_item.addChild(item)
+            for child in by_parent.get(task.id, []):
+                add(item, child)
+
+        for root in by_parent.get(None, []):
+            add(None, root)
+
+        self._backlog_tree.expandAll()
+        self._on_selection_changed()
+
+    @staticmethod
+    def _backlog_label(t: Task) -> str:
+        label = f"{t.title}"
+        if t.estimated_hours:
+            label += f"  ({t.estimated_hours:.1f}h)"
+        label += f"  [{t.canonical_activity}]"
+        if t.spilled_from:
+            label += " ⟲"
+        return label
+
+    def _selected_task_id(self) -> int | None:
+        """Id of the selected backlog task, or None."""
+        item = self._backlog_tree.currentItem()
+        if item is None:
+            return None
+        task_id: int | None = item.data(0, Qt.ItemDataRole.UserRole)
+        return task_id
+
+    def _on_selection_changed(self) -> None:
+        self._btn_subtask.setEnabled(self._selected_task_id() is not None)
 
     def _refresh_week(self) -> None:
         # Capacity bars
@@ -266,6 +333,16 @@ class TaskPlanner(QWidget):
             self.refresh()
 
     def _on_add_task(self) -> None:
+        self._create_task(parent_id=None)
+
+    def _on_add_subtask(self) -> None:
+        """Create a task under the current backlog selection."""
+        parent_id = self._selected_task_id()
+        if parent_id is None:
+            return
+        self._create_task(parent_id=parent_id)
+
+    def _create_task(self, *, parent_id: int | None) -> None:
         dlg = _NewTaskDialog(self._conn, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
@@ -274,16 +351,16 @@ class TaskPlanner(QWidget):
                 title=data["title"],
                 canonical_activity=data["activity"],
                 project_id=data.get("project_id"),
+                parent_id=parent_id,
                 estimated_hours=data.get("estimated_hours"),
                 due_date=data.get("due_date"),
             )
             self.refresh()
 
     def _on_assign_to_week(self) -> None:
-        item = self._backlog_list.currentItem()
-        if item is None:
+        tid = self._selected_task_id()
+        if tid is None:
             return
-        tid = item.data(Qt.ItemDataRole.UserRole)
         from kalsangati.core.analytics import _current_week_start
         from kalsangati.persistence.db import get_setting
 
@@ -293,25 +370,22 @@ class TaskPlanner(QWidget):
         self.refresh()
 
     def _on_mark_done(self) -> None:
-        item = self._backlog_list.currentItem()
-        if item is None:
+        tid = self._selected_task_id()
+        if tid is None:
             return
-        tid = item.data(Qt.ItemDataRole.UserRole)
         self._apply_status(tid, "done")
 
     def _on_delete(self) -> None:
         """Soft-delete the selected task and its subtree.
 
         Routes through the service rather than ``core.tasks.delete``:
-        the backlog list is flat, so a parent can be selected here, and
-        the core primitive does not cascade — it would leave children
-        live and orphaned.  Deletion is reversible, so there is no
-        confirmation dialog.
+        the core primitive does not cascade, so deleting a parent would
+        leave children live and orphaned.  Deletion is reversible, so
+        there is no confirmation dialog.
         """
-        item = self._backlog_list.currentItem()
-        if item is None:
+        tid = self._selected_task_id()
+        if tid is None:
             return
-        tid = item.data(Qt.ItemDataRole.UserRole)
         try:
             delete_task(self._conn, tid)
         except KalsangatiError as e:
@@ -323,6 +397,92 @@ class TaskPlanner(QWidget):
             )
         finally:
             self.refresh()
+
+    def _apply_reparent(
+        self, task_id: int, new_parent_id: int | None
+    ) -> None:
+        """Route a drag-drop move through the reparent service.
+
+        Presentation-layer exception pattern.  The most interesting path
+        is ``TaskCycleError`` — dragging a task onto its own descendant —
+        which becomes a sentence rather than a stack trace.
+
+        ``refresh()`` runs either way, redrawing from the database, so a
+        refused move cannot leave the tree showing something the data
+        does not agree with.
+        """
+        try:
+            reparent_task(self._conn, task_id, new_parent_id=new_parent_id)
+        except KalsangatiError as e:
+            QMessageBox.warning(self, "Cannot move task", str(e))
+        except Exception:
+            logger.exception(
+                "Unexpected error reparenting task %s under %s",
+                task_id,
+                new_parent_id,
+            )
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
+
+
+class _BacklogTree(QTreeWidget):
+    """Backlog tree with drag-to-reparent.
+
+    Qt's own ``InternalMove`` is deliberately **not** used.  It moves the
+    item inside the widget before any handler runs, so a move the service
+    then refuses would leave the display disagreeing with the database.
+    This subclass intercepts the drop, calls the service, and lets the
+    planner redraw from the database instead.
+    """
+
+    def __init__(self, planner: TaskPlanner) -> None:
+        super().__init__()
+        self._planner = planner
+        self.setHeaderHidden(True)
+        self.setColumnCount(1)
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDropIndicatorShown(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+
+    def dropEvent(self, event: QDropEvent | None) -> None:  # noqa: N802
+        """Reparent the dragged task instead of moving the widget item.
+
+        Dropping onto an item makes the dragged task its child; dropping
+        onto blank space promotes the task to a root.
+
+        The parameter is ``QDropEvent | None`` because that is how PyQt5
+        types the virtual.  Narrowing it to a bare ``QDropEvent`` would
+        be a Liskov violation and is the second half of pitfall #32; the
+        camelCase name is Qt's, hence the ``noqa``.
+        """
+        if event is None:
+            return
+        dragged = self.currentItem()
+        if dragged is None:
+            return
+        task_id: int | None = dragged.data(0, Qt.ItemDataRole.UserRole)
+        if task_id is None:
+            return
+
+        target = self.itemAt(event.pos())
+        new_parent_id: int | None = (
+            target.data(0, Qt.ItemDataRole.UserRole)
+            if target is not None
+            else None
+        )
+
+        # Accept so the drag ends cleanly, but never call super(): the
+        # base class would move the item itself, and refresh() is the
+        # only thing allowed to redraw.
+        event.acceptProposedAction()
+        self._planner._apply_reparent(task_id, new_parent_id)
 
 
 class _NewTaskDialog(QDialog):
