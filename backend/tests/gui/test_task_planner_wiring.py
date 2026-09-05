@@ -21,6 +21,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import sqlite3  # noqa: E402
 from collections.abc import Generator  # noqa: E402
+from pathlib import Path  # noqa: E402
 from unittest.mock import patch  # noqa: E402
 
 import pytest  # noqa: E402
@@ -607,6 +608,9 @@ class TestEditTask:
                 "due_date": "2026-10-01",
                 "project_id": None,
             }
+            # Explicit: an unset MagicMock method returns a Mock, which
+            # is not None, which would trip the notes write path.
+            instance.notes_body.return_value = None
             planner._edit_task(t.id)
 
         fresh = get_by_id(conn, t.id)
@@ -667,6 +671,7 @@ class TestEditTask:
                 "estimated_hours": None, "due_date": None,
                 "project_id": None,
             }
+            instance.notes_body.return_value = None
             planner._edit_task(t.id)
 
         assert mock_critical.called
@@ -795,3 +800,158 @@ class TestProjectsDialog:
         dlg = _ProjectsDialog(conn)
         assert dlg._btn_rename.isEnabled() is False
         assert dlg._btn_delete.isEnabled() is False
+
+
+# ── Notes tab (P2U07) ───────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def notes_root(tmp_path: Path) -> Generator[Path, None, None]:
+    """Redirect the notes directory into a temporary folder.
+
+    **autouse on purpose.**  This module's tests write real files, and a
+    test that forgets to ask for this fixture writes them into the
+    user's actual notes folder — silently, while still passing.  That
+    happened once: a test predating the notes tab patched the dialog
+    with a MagicMock, whose unset ``notes_body()`` returned a Mock
+    rather than ``None``, so the write path fired against the real
+    directory.  Making it autouse means no future test can repeat it.
+    """
+    from kalsangati.infrastructure import notes as notes_files
+
+    root = tmp_path / "notes"
+    original = notes_files.notes_directory
+    notes_files.notes_directory = lambda: root  # type: ignore[assignment]
+    yield root
+    notes_files.notes_directory = original  # type: ignore[assignment]
+
+
+class TestNotesTab:
+    def test_absent_in_create_mode(
+        self, conn: sqlite3.Connection, qapp: QApplication
+    ) -> None:
+        """A task being created has no id, so no path can be derived."""
+        dlg = _TaskDialog(conn)
+        assert dlg.notes_body() is None
+
+    def test_present_in_edit_mode(
+        self, conn: sqlite3.Connection, qapp: QApplication,
+        notes_root: Path,
+    ) -> None:
+        t = create(conn, "Has notes", "01-02-el")
+        dlg = _TaskDialog(conn, task=t)
+        assert dlg._notes_edit is not None
+
+    def test_unchanged_body_reports_none(
+        self, conn: sqlite3.Connection, qapp: QApplication,
+        notes_root: Path,
+    ) -> None:
+        """Opening and closing a task must not rewrite its file."""
+        from kalsangati.infrastructure import notes as notes_files
+
+        t = create(conn, "Untouched", "01-02-el")
+        notes_files.write_body(conn, t.id, "existing prose")
+        dlg = _TaskDialog(conn, task=t)
+        assert dlg.notes_body() is None
+
+    def test_changed_body_is_reported(
+        self, conn: sqlite3.Connection, qapp: QApplication,
+        notes_root: Path,
+    ) -> None:
+        t = create(conn, "Edited", "01-02-el")
+        dlg = _TaskDialog(conn, task=t)
+        assert dlg._notes_edit is not None
+        dlg._notes_edit.setPlainText("new prose")
+        assert dlg.notes_body() == "new prose"
+
+    def test_existing_body_is_loaded(
+        self, conn: sqlite3.Connection, qapp: QApplication,
+        notes_root: Path,
+    ) -> None:
+        from kalsangati.infrastructure import notes as notes_files
+
+        t = create(conn, "Loaded", "01-02-el")
+        notes_files.write_body(conn, t.id, "## Approach\n\nsomething")
+        dlg = _TaskDialog(conn, task=t)
+        assert dlg._notes_edit is not None
+        assert "## Approach" in dlg._notes_edit.toPlainText()
+
+
+class TestEditTaskWritesNotes:
+    def test_changed_body_is_written(
+        self, planner: TaskPlanner, conn: sqlite3.Connection,
+        notes_root: Path,
+    ) -> None:
+        from kalsangati.infrastructure import notes as notes_files
+
+        t = create(conn, "Write me", "01-02-el")
+
+        with patch(
+            "kalsangati.gui.task_planner._TaskDialog"
+        ) as mock_dialog:
+            instance = mock_dialog.return_value
+            instance.exec.return_value = QDialog.DialogCode.Accepted
+            instance.get_data.return_value = {
+                "title": "Write me", "activity": "01-02-el",
+                "estimated_hours": None, "due_date": None,
+                "project_id": None,
+            }
+            instance.notes_body.return_value = "body from the dialog"
+            planner._edit_task(t.id)
+
+        assert notes_files.read_body(conn, t.id) == "body from the dialog"
+
+    def test_unchanged_body_writes_no_file(
+        self, planner: TaskPlanner, conn: sqlite3.Connection,
+        notes_root: Path,
+    ) -> None:
+        from kalsangati.infrastructure import notes as notes_files
+
+        t = create(conn, "No notes", "01-02-el")
+
+        with patch(
+            "kalsangati.gui.task_planner._TaskDialog"
+        ) as mock_dialog:
+            instance = mock_dialog.return_value
+            instance.exec.return_value = QDialog.DialogCode.Accepted
+            instance.get_data.return_value = {
+                "title": "No notes", "activity": "01-02-el",
+                "estimated_hours": None, "due_date": None,
+                "project_id": None,
+            }
+            instance.notes_body.return_value = None
+            planner._edit_task(t.id)
+
+        path = notes_files.derive_path(conn, t.id)
+        assert path is not None
+        assert not path.is_file()
+
+    def test_note_write_failure_keeps_the_field_changes(
+        self, planner: TaskPlanner, conn: sqlite3.Connection,
+        notes_root: Path,
+    ) -> None:
+        """A read-only disk must not cost the rest of the edit."""
+        t = create(conn, "Before", "01-02-el")
+
+        with (
+            patch("kalsangati.gui.task_planner._TaskDialog") as mock_dialog,
+            patch(
+                "kalsangati.gui.task_planner.notes_files.write_body",
+                side_effect=OSError("read-only filesystem"),
+            ),
+            patch.object(QMessageBox, "warning") as mock_warning,
+        ):
+            instance = mock_dialog.return_value
+            instance.exec.return_value = QDialog.DialogCode.Accepted
+            instance.get_data.return_value = {
+                "title": "After", "activity": "01-02-el",
+                "estimated_hours": None, "due_date": None,
+                "project_id": None,
+            }
+            instance.notes_body.return_value = "doomed prose"
+            planner._edit_task(t.id)
+
+        assert mock_warning.called
+        fresh = get_by_id(conn, t.id)
+        assert fresh is not None
+        assert fresh.title == "After"  # the field change survived
