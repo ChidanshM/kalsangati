@@ -309,19 +309,72 @@ def get_connection(
 @contextmanager
 def transaction(
     conn: sqlite3.Connection,
+    *,
+    immediate: bool = True,
 ) -> Generator[sqlite3.Cursor, None, None]:
-    """Context manager that wraps a block in a SAVEPOINT.
+    """Wrap a block in a transaction, taking the write lock upfront.
 
-    Commits on clean exit; rolls back on exception.  Uses SAVEPOINTs
-    so it can nest safely within an existing transaction.
+    Commits on clean exit; rolls back on exception.  Nests safely.
+
+    **Why ``immediate`` defaults to True.**  Every service in this
+    codebase reads before it writes — an existence check, a no-op
+    short-circuit — and in WAL mode a transaction's view of the database
+    is fixed at its *first read*.  A deferred transaction therefore
+    validates against a snapshot, asks for the write lock later, and
+    discovers at that point that another connection has committed in
+    between.  SQLite refuses the write (``SQLITE_BUSY_SNAPSHOT``) rather
+    than silently discarding the other change.
+
+    ``PRAGMA busy_timeout`` does not help.  It answers "the lock is held
+    right now, wait"; this is "your view expired", and waiting cannot
+    un-expire it — the transaction has to roll back and start over.
+    Taking the write lock *before* the first read means nothing else can
+    commit underneath, so the snapshot cannot go stale.
+
+    The cost is that writers serialise and wait on each other.  For a
+    local application with at most a desktop process and an embedded API
+    daemon, that is the correct trade.
+
+    Defaulting to True is deliberate: a caller opts *out*.  A new service
+    that forgot to opt in would be silently exposed, and the exposure is
+    invisible until a second writer exists — which is exactly when nobody
+    is looking for it.  Pass ``immediate=False`` for a read-only block
+    that should not hold the write lock.
+
+    **Why the outermost / nested split.**  There is no
+    ``SAVEPOINT IMMEDIATE``; lock mode is a property of ``BEGIN``.  So
+    the outermost transaction issues ``BEGIN IMMEDIATE`` and the nested
+    ones issue ``SAVEPOINT``.  Nesting needs no lock of its own — the
+    outer transaction already holds it — so ``immediate`` is ignored
+    there rather than being an error.
+
+    **A note on the driver.**  This connection uses Python's default
+    ``isolation_level``, so ``sqlite3`` inserts its own ``BEGIN`` before
+    DML when no transaction is open.  ``conn.in_transaction`` is what
+    distinguishes outermost from nested, and issuing ``BEGIN IMMEDIATE``
+    ourselves turns autocommit off, after which the driver adds nothing.
+    That interaction is load-bearing and was previously undocumented.
 
     Args:
         conn: An active database connection.
+        immediate: Take the write lock before the first read.  Leave at
+            the default for anything that writes.
 
     Yields:
         A cursor bound to the connection.
     """
     cur = conn.cursor()
+
+    if immediate and not conn.in_transaction:
+        cur.execute("BEGIN IMMEDIATE")
+        try:
+            yield cur
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return
+
     savepoint = f"sp_{id(cur)}"
     cur.execute(f"SAVEPOINT {savepoint}")
     try:
