@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import sqlite3
 from pathlib import Path
 
@@ -15,6 +16,7 @@ from kalsangati.persistence.db import (
     parse_time_blocks,
     serialize_time_blocks,
     set_setting,
+    transaction,
 )
 
 
@@ -433,3 +435,170 @@ class TestSlugify:
 
     def test_mixed_script_keeps_ascii(self) -> None:
         assert _slugify("Read Vimarśa chapter", 1) == "read-vimara-chapter"
+
+
+# ── Transaction lock mode (P2U09) ───────────────────────────────
+
+
+def _second_connection(path: Path) -> sqlite3.Connection:
+    """Another connection to the same database, refusing to wait.
+
+    ``timeout=0`` matters: with the default five seconds a contended
+    write would stall the suite instead of failing it.
+    """
+    conn = sqlite3.connect(str(path), timeout=0)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    return conn
+
+
+class TestImmediateTakesTheLockUpfront:
+    """The point of the unit.
+
+    Every service reads before it writes, and in WAL mode a
+    transaction's view is fixed at its first read.  Deferred, the write
+    lock is only requested at the end — by which time another connection
+    may have committed and the snapshot is stale.
+    """
+
+    def test_lock_is_held_before_any_write(self, tmp_path: Path) -> None:
+        """Inside an immediate transaction that has written nothing,
+        another connection must already be locked out.
+
+        Deferred, it would not be: no lock exists until the first write.
+        """
+        path = tmp_path / "lock.db"
+        conn_a = init_db(path)
+        conn_b = _second_connection(path)
+
+        with transaction(conn_a) as cur:
+            cur.execute("SELECT 1")  # read only, no write yet
+            with pytest.raises(sqlite3.OperationalError):
+                conn_b.execute(
+                    "INSERT INTO settings (key, value) VALUES ('x', 'y')"
+                )
+                conn_b.commit()
+
+        conn_b.close()
+
+    def test_deferred_does_not_hold_the_lock(
+        self, tmp_path: Path
+    ) -> None:
+        """The contrast that gives the test above its meaning."""
+        path = tmp_path / "deferred.db"
+        conn_a = init_db(path)
+        conn_b = _second_connection(path)
+
+        with transaction(conn_a, immediate=False) as cur:
+            cur.execute("SELECT 1")
+            conn_b.execute(
+                "INSERT INTO settings (key, value) VALUES ('x', 'y')"
+            )
+            conn_b.commit()
+
+        conn_b.close()
+
+    def test_lock_released_after_commit(self, tmp_path: Path) -> None:
+        path = tmp_path / "released.db"
+        conn_a = init_db(path)
+        conn_b = _second_connection(path)
+
+        with transaction(conn_a) as cur:
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('a', '1')"
+            )
+
+        conn_b.execute("INSERT INTO settings (key, value) VALUES ('b', '2')")
+        conn_b.commit()
+        conn_b.close()
+
+
+class TestTransactionSemanticsUnchanged:
+    """Seven services and every core write go through this function."""
+
+    def test_commits_on_clean_exit(self, conn: sqlite3.Connection) -> None:
+        with transaction(conn) as cur:
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('k', 'v')"
+            )
+        assert get_setting(conn, "k") == "v"
+
+    def test_rolls_back_on_exception(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        with (
+            pytest.raises(RuntimeError),
+            transaction(conn) as cur,
+        ):
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('k', 'v')"
+            )
+            raise RuntimeError("boom")
+        assert get_setting(conn, "k") is None
+
+    def test_nested_uses_a_savepoint(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """``BEGIN`` inside an open transaction is an error, so the
+        nested call must take the savepoint path even when it asks for
+        immediate."""
+        with transaction(conn) as outer:
+            outer.execute(
+                "INSERT INTO settings (key, value) VALUES ('outer', '1')"
+            )
+            with transaction(conn) as inner:
+                inner.execute(
+                    "INSERT INTO settings (key, value) VALUES ('inner', '2')"
+                )
+        assert get_setting(conn, "outer") == "1"
+        assert get_setting(conn, "inner") == "2"
+
+    def test_inner_failure_leaves_outer_usable(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """The property ``create()`` depends on: a task and its event are
+        one savepoint inside a caller's transaction."""
+        with transaction(conn) as outer:
+            outer.execute(
+                "INSERT INTO settings (key, value) VALUES ('kept', '1')"
+            )
+            with (
+                contextlib.suppress(RuntimeError),
+                transaction(conn) as inner,
+            ):
+                inner.execute(
+                    "INSERT INTO settings (key, value) "
+                    "VALUES ('discarded', '2')"
+                )
+                raise RuntimeError("inner blew up")
+            outer.execute(
+                "INSERT INTO settings (key, value) VALUES ('after', '3')"
+            )
+
+        assert get_setting(conn, "kept") == "1"
+        assert get_setting(conn, "discarded") is None
+        assert get_setting(conn, "after") == "3"
+
+    def test_in_transaction_is_clear_afterwards(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        """A leaked open transaction would hold the write lock for the
+        life of the process."""
+        with transaction(conn) as cur:
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('k', 'v')"
+            )
+        assert conn.in_transaction is False
+
+    def test_in_transaction_is_clear_after_rollback(
+        self, conn: sqlite3.Connection
+    ) -> None:
+        with (
+            pytest.raises(RuntimeError),
+            transaction(conn) as cur,
+        ):
+            cur.execute(
+                "INSERT INTO settings (key, value) VALUES ('k', 'v')"
+            )
+            raise RuntimeError("boom")
+        assert conn.in_transaction is False
