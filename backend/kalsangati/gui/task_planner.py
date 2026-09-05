@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 import sqlite3
 from collections import defaultdict
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QDropEvent
@@ -23,6 +24,8 @@ from PyQt5.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -37,7 +40,12 @@ from PyQt5.QtWidgets import (
 )
 
 from kalsangati.core.exceptions import KalsangatiError
+from kalsangati.core.projects import Project
+from kalsangati.core.projects import create as project_create
+from kalsangati.core.projects import delete as project_delete
 from kalsangati.core.projects import get_all as get_all_projects
+from kalsangati.core.projects import get_by_id as project_get_by_id
+from kalsangati.core.projects import update as project_update
 from kalsangati.core.tasks import (
     Task,
     all_capacities,
@@ -47,6 +55,9 @@ from kalsangati.core.tasks import (
 )
 from kalsangati.core.tasks import (
     get_all as get_all_tasks,
+)
+from kalsangati.core.tasks import (
+    get_by_id as get_task_by_id,
 )
 from kalsangati.core.tasks import (
     update as update_task,
@@ -97,6 +108,11 @@ class TaskPlanner(QWidget):
         self._btn_subtask.setEnabled(False)
         btn_row.addWidget(self._btn_subtask)
 
+        self._btn_edit = QPushButton("Edit")
+        self._btn_edit.clicked.connect(self._on_edit_selected)
+        self._btn_edit.setEnabled(False)
+        btn_row.addWidget(self._btn_edit)
+
         btn_assign = QPushButton("Assign to Week")
         btn_assign.clicked.connect(self._on_assign_to_week)
         btn_row.addWidget(btn_assign)
@@ -109,8 +125,17 @@ class TaskPlanner(QWidget):
         btn_del.clicked.connect(self._on_delete)
         btn_row.addWidget(btn_del)
 
+        btn_projects = QPushButton("Projects…")
+        btn_projects.clicked.connect(self._on_projects)
+        btn_row.addWidget(btn_projects)
+
         self._backlog_tree.itemSelectionChanged.connect(
             self._on_selection_changed
+        )
+        self._backlog_tree.itemDoubleClicked.connect(
+            lambda item, _col: self._edit_task(
+                item.data(0, Qt.ItemDataRole.UserRole)
+            )
         )
 
         left_layout.addLayout(btn_row)
@@ -140,6 +165,12 @@ class TaskPlanner(QWidget):
         )
         self._week_table.setEditTriggers(
             QTableWidget.EditTrigger.NoEditTriggers
+        )
+        # Tasks in this_week / in_progress / on_hold live only here, so
+        # without this they would stay uneditable — the same gap in a
+        # different place.
+        self._week_table.cellDoubleClicked.connect(
+            lambda row, _col: self._edit_task(self._week_task_id(row))
         )
         right_layout.addWidget(self._week_table)
 
@@ -218,7 +249,22 @@ class TaskPlanner(QWidget):
         return task_id
 
     def _on_selection_changed(self) -> None:
-        self._btn_subtask.setEnabled(self._selected_task_id() is not None)
+        has = self._selected_task_id() is not None
+        self._btn_subtask.setEnabled(has)
+        self._btn_edit.setEnabled(has)
+
+    def _week_task_id(self, row: int) -> int | None:
+        """Task id behind a week-table row.
+
+        The id rides on the first column's item data; the week table
+        stores it differently from the backlog tree, which is why this
+        exists rather than reusing ``_selected_task_id``.
+        """
+        item = self._week_table.item(row, 0)
+        if item is None:
+            return None
+        task_id: int | None = item.data(Qt.ItemDataRole.UserRole)
+        return task_id
 
     def _refresh_week(self) -> None:
         # Capacity bars
@@ -261,7 +307,9 @@ class TaskPlanner(QWidget):
         self._week_table.setRowCount(len(week_tasks))
 
         for i, t in enumerate(week_tasks):
-            self._week_table.setItem(i, 0, QTableWidgetItem(t.title))
+            title_item = QTableWidgetItem(t.title)
+            title_item.setData(Qt.ItemDataRole.UserRole, t.id)
+            self._week_table.setItem(i, 0, title_item)
             self._week_table.setItem(i, 1, QTableWidgetItem(t.canonical_activity))
             est = f"{t.estimated_hours:.1f}" if t.estimated_hours else "—"
             self._week_table.setItem(i, 2, QTableWidgetItem(est))
@@ -343,7 +391,7 @@ class TaskPlanner(QWidget):
         self._create_task(parent_id=parent_id)
 
     def _create_task(self, *, parent_id: int | None) -> None:
-        dlg = _NewTaskDialog(self._conn, self)
+        dlg = _TaskDialog(self._conn, self)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             data = dlg.get_data()
             create_task(
@@ -356,6 +404,64 @@ class TaskPlanner(QWidget):
                 due_date=data.get("due_date"),
             )
             self.refresh()
+
+    def _on_edit_selected(self) -> None:
+        self._edit_task(self._selected_task_id())
+
+    def _edit_task(self, task_id: int | None) -> None:
+        """Open the task dialog prefilled, and apply what comes back.
+
+        Shared by the Edit button, a backlog double-click, and a
+        week-table double-click.
+
+        Writes through ``core.tasks.update`` rather than a service:
+        renaming or re-dating a task changes no invariant and is
+        deliberately not audited, unlike status, parent, and deletion,
+        which each have their own owner.
+
+        ``update`` raises ``sqlite3.IntegrityError`` rather than a domain
+        error, so bad input lands in the unexpected branch — recorded as
+        a gap rather than papered over here.
+        """
+        if task_id is None:
+            return
+        task = get_task_by_id(self._conn, task_id)
+        if task is None:
+            self.refresh()  # stale id; redraw and move on
+            return
+
+        dlg = _TaskDialog(self._conn, self, task=task)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        data = dlg.get_data()
+        try:
+            update_task(
+                self._conn,
+                task_id,
+                title=data["title"],
+                canonical_activity=data["activity"],
+                estimated_hours=data["estimated_hours"],
+                due_date=data["due_date"],
+                project_id=data["project_id"],
+            )
+        except KalsangatiError as e:
+            QMessageBox.warning(self, "Cannot save task", str(e))
+        except Exception:
+            logger.exception("Unexpected error updating task %s", task_id)
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
+
+    def _on_projects(self) -> None:
+        """Open the project manager, then redraw.
+
+        The task dialog reads its project list at construction, so a
+        project created here is visible the next time it opens.
+        """
+        _ProjectsDialog(self._conn, self).exec()
+        self.refresh()
 
     def _on_assign_to_week(self) -> None:
         tid = self._selected_task_id()
@@ -485,15 +591,35 @@ class _BacklogTree(QTreeWidget):
         self._planner._apply_reparent(task_id, new_parent_id)
 
 
-class _NewTaskDialog(QDialog):
-    """Dialog for creating a new task."""
+class _TaskDialog(QDialog):
+    """Create or edit a task.
+
+    One dialog, two modes: pass ``task`` to edit it, omit it to create.
+    The fields are exactly those ``core.tasks.update`` accepts.
+
+    Deliberately absent: status (the week-table dropdown owns it, and
+    only legal transitions may be offered), parent (``reparent_task``
+    owns it, and a move needs a cycle check), and slug (fixed at
+    creation so a rename does not move a file).
+
+    Args:
+        conn: Database connection.
+        parent: Parent widget.
+        task: When given, the dialog opens in edit mode with this
+            task's values prefilled.
+    """
 
     def __init__(
-        self, conn: sqlite3.Connection, parent: QWidget | None = None
+        self,
+        conn: sqlite3.Connection,
+        parent: QWidget | None = None,
+        *,
+        task: Task | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("New Task")
+        self.setWindowTitle("Edit Task" if task else "New Task")
         self._conn = conn
+        self._task = task
         layout = QFormLayout(self)
 
         self._title = QLineEdit()
@@ -513,8 +639,13 @@ class _NewTaskDialog(QDialog):
 
         self._project_combo = QComboBox()
         self._project_combo.addItem("(none)", None)
+        self._project_activity: dict[int, str] = {}
         for p in get_all_projects(conn):
             self._project_combo.addItem(p.name, p.id)
+            self._project_activity[p.id] = p.canonical_activity
+        self._project_combo.currentIndexChanged.connect(
+            self._on_project_changed
+        )
         layout.addRow("Project:", self._project_combo)
 
         # PyQt5-stubs declares the bitwise-OR of StandardButton enum
@@ -524,11 +655,93 @@ class _NewTaskDialog(QDialog):
             QDialogButtonBox.StandardButton.Ok
             | QDialogButtonBox.StandardButton.Cancel
         )
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
         layout.addRow(buttons)
 
+        if task is not None:
+            self._prefill(task)
+
+    def _prefill(self, task: Task) -> None:
+        """Load an existing task's values into the fields."""
+        self._title.setText(task.title)
+        self._activity.setText(task.canonical_activity)
+        self._est_hours.setText(
+            "" if task.estimated_hours is None else str(task.estimated_hours)
+        )
+        self._due_date.setText(task.due_date or "")
+        if task.project_id is not None:
+            index = self._project_combo.findData(task.project_id)
+            if index >= 0:
+                self._project_combo.setCurrentIndex(index)
+
+    def _on_project_changed(self, _index: int) -> None:
+        """Fill the activity from the chosen project.
+
+        Activity is an overridable default from the project: a task
+        usually belongs to the same kind of time as its project, and
+        occasionally does not.  Without this the rule is written down
+        and does nothing, and you end up filing tasks in the wrong
+        project to make the accounting come out right.
+
+        **Only fills an empty field, or one still holding another
+        project's activity.**  A value the user typed is never
+        overwritten.
+        """
+        project_id = self._project_combo.currentData()
+        if project_id is None:
+            return
+        activity = self._project_activity.get(project_id)
+        if activity is None:
+            return
+        current = self._activity.text().strip()
+        if current and current not in self._project_activity.values():
+            return  # user-supplied; leave it alone
+        self._activity.setText(activity)
+
+    def _on_accept(self) -> None:
+        """Validate before closing.
+
+        The dialog previously converted the estimate with a bare
+        ``float()`` in ``get_data``, which raised straight out of the
+        accept handler on any non-numeric input, and stored the due date
+        unvalidated — a malformed date then sorted arbitrarily under
+        ``COALESCE(due_date, '9999-12-31')`` rather than failing.
+        """
+        problem = self._validation_error()
+        if problem is not None:
+            QMessageBox.warning(self, "Check the form", problem)
+            return  # stay open
+        self.accept()
+
+    def _validation_error(self) -> str | None:
+        """Return the first problem with the form, or None."""
+        if not self._title.text().strip():
+            return "A title is required."
+        if not self._activity.text().strip():
+            return "An activity is required."
+
+        est = self._est_hours.text().strip()
+        if est:
+            try:
+                value = float(est)
+            except ValueError:
+                return f"Estimated hours must be a number, not {est!r}."
+            if value < 0:
+                return "Estimated hours cannot be negative."
+
+        due = self._due_date.text().strip()
+        if due:
+            try:
+                datetime.strptime(due, "%Y-%m-%d")
+            except ValueError:
+                return f"Due date must look like 2026-09-30, not {due!r}."
+        return None
+
     def get_data(self) -> dict:
+        """Field values, validated by ``_on_accept`` before the dialog
+        closes.  Safe to call after an accepted exec.
+        """
         est = self._est_hours.text().strip()
         return {
             "title": self._title.text().strip(),
@@ -537,3 +750,195 @@ class _NewTaskDialog(QDialog):
             "due_date": self._due_date.text().strip() or None,
             "project_id": self._project_combo.currentData(),
         }
+
+
+class _ProjectsDialog(QDialog):
+    """List, create, rename and delete projects.
+
+    Deleting a project does **not** delete its tasks: ``projects.delete``
+    clears their ``project_id`` first.  The confirmation says how many
+    will survive, because "delete project" reasonably reads as "delete
+    its tasks".
+
+    Unlike tasks, this deletion is irreversible — which is why it asks
+    and task deletion does not.
+    """
+
+    def __init__(
+        self, conn: sqlite3.Connection, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Projects")
+        self._conn = conn
+        layout = QVBoxLayout(self)
+
+        self._list = QListWidget()
+        layout.addWidget(self._list)
+
+        row = QHBoxLayout()
+        btn_new = QPushButton("New")
+        btn_new.clicked.connect(self._on_new)
+        row.addWidget(btn_new)
+
+        self._btn_rename = QPushButton("Rename")
+        self._btn_rename.clicked.connect(self._on_rename)
+        row.addWidget(self._btn_rename)
+
+        self._btn_delete = QPushButton("Delete")
+        self._btn_delete.clicked.connect(self._on_delete)
+        row.addWidget(self._btn_delete)
+        layout.addLayout(row)
+
+        close = QDialogButtonBox(  # type: ignore[call-overload]
+            QDialogButtonBox.StandardButton.Close
+        )
+        close.rejected.connect(self.reject)
+        layout.addWidget(close)
+
+        self._list.itemSelectionChanged.connect(self._sync_buttons)
+        self.refresh()
+
+    def refresh(self) -> None:
+        """Reload the list from the database."""
+        self._list.clear()
+        for p in get_all_projects(self._conn):
+            item = QListWidgetItem(f"{p.name}  [{p.canonical_activity}]")
+            item.setData(Qt.ItemDataRole.UserRole, p.id)
+            self._list.addItem(item)
+        self._sync_buttons()
+
+    def _sync_buttons(self) -> None:
+        has = self._selected_id() is not None
+        self._btn_rename.setEnabled(has)
+        self._btn_delete.setEnabled(has)
+
+    def _selected_id(self) -> int | None:
+        item = self._list.currentItem()
+        if item is None:
+            return None
+        project_id: int | None = item.data(Qt.ItemDataRole.UserRole)
+        return project_id
+
+    def _on_new(self) -> None:
+        dlg = _ProjectDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name, activity = dlg.get_data()
+        try:
+            project_create(self._conn, name, activity)
+        except Exception:
+            logger.exception("Unexpected error creating project %r", name)
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
+
+    def _on_rename(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            return
+        existing = project_get_by_id(self._conn, pid)
+        if existing is None:
+            self.refresh()
+            return
+        dlg = _ProjectDialog(self, project=existing)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        name, activity = dlg.get_data()
+        try:
+            project_update(
+                self._conn, pid, name=name, canonical_activity=activity
+            )
+        except Exception:
+            logger.exception("Unexpected error renaming project %s", pid)
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
+
+    def _on_delete(self) -> None:
+        pid = self._selected_id()
+        if pid is None:
+            return
+        count = self._conn.execute(
+            "SELECT COUNT(*) FROM tasks "
+            "WHERE project_id = ? AND deleted_at IS NULL",
+            (pid,),
+        ).fetchone()[0]
+        message = (
+            f"Delete this project?\n\n{count} task(s) will keep existing "
+            "without a project."
+            if count
+            else "Delete this project?"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Delete project",
+            message,
+            # PyQt5-stubs declares the bitwise-OR of StandardButton
+            # values as int, but question() accepts it as
+            # StandardButtons.  Runtime is correct; the stub is wrong.
+            # Same defect as the QDialogButtonBox construction below.
+            QMessageBox.StandardButton.Yes  # type: ignore[arg-type]
+            | QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            project_delete(self._conn, pid)
+        except Exception:
+            logger.exception("Unexpected error deleting project %s", pid)
+            QMessageBox.critical(
+                self, "Unexpected error", "Check logs for details."
+            )
+        finally:
+            self.refresh()
+
+
+class _ProjectDialog(QDialog):
+    """Name and activity for a single project."""
+
+    def __init__(
+        self, parent: QWidget | None = None, *, project: Project | None = None
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Edit Project" if project else "New Project")
+        layout = QFormLayout(self)
+
+        self._name = QLineEdit()
+        layout.addRow("Name:", self._name)
+
+        self._activity = QLineEdit()
+        self._activity.setPlaceholderText("canonical activity name")
+        layout.addRow("Activity:", self._activity)
+
+        buttons = QDialogButtonBox(  # type: ignore[call-overload]
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self._on_accept)
+        buttons.rejected.connect(self.reject)
+        layout.addRow(buttons)
+
+        if project is not None:
+            self._name.setText(project.name)
+            self._activity.setText(project.canonical_activity)
+
+    def _on_accept(self) -> None:
+        if not self._name.text().strip():
+            QMessageBox.warning(self, "Check the form", "A name is required.")
+            return
+        if not self._activity.text().strip():
+            QMessageBox.warning(
+                self, "Check the form", "An activity is required."
+            )
+            return
+        self.accept()
+
+    def get_data(self) -> tuple[str, str]:
+        return (
+            self._name.text().strip(),
+            self._activity.text().strip(),
+        )
