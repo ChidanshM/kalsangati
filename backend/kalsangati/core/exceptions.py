@@ -137,3 +137,24 @@ class InvalidTaskScheduleError(KalsangatiError):
     into a clean domain error the presentation layer can show as a
     warning.
     """
+
+
+class TaskCycleError(KalsangatiError):
+    """Raised when reparenting a task would make it its own ancestor.
+
+    Surfaces from
+    :func:`kalsangati.services.reparent_task.reparent_task`, which walks
+    the proposed parent's ancestor chain *before* the write.  Includes
+    the degenerate self-parent case, which the same walk catches on its
+    first step.
+
+    A cycle cannot be detected from any single row: every parent/child
+    pair stays locally consistent while the graph as a whole is broken,
+    and any query that walks upward then runs forever rather than
+    failing.  The database refuses to store one (the
+    ``trg_tasks_no_cycle`` trigger), so this exception exists to give
+    the caller a domain error instead of the trigger's raw
+    ``sqlite3.IntegrityError`` — the same service-checks-first pattern
+    :class:`InvalidTaskScheduleError` follows.  The trigger remains the
+    backstop for every path that is not this service.
+    """

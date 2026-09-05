@@ -102,6 +102,8 @@ EVENT_TYPES: frozenset[str] = frozenset({
     "started",  # entering in_progress
     "planned",  # entering this_week
     "backlogged",  # returning to backlog manually (cf. automatic "spilled")
+    # Hierarchy verbs (P2U03, reparent_task service).
+    "reparented",  # parent_id changed, including promotion to root
 })
 
 
