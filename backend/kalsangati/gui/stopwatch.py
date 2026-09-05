@@ -126,24 +126,60 @@ class StopwatchWidget(QWidget):
         layout.addWidget(self._status_label)
 
     def _refresh_activities(self) -> None:
-        """Populate activity dropdown from the active Niyam."""
+        """Repopulate the activity dropdown from the active Niyam.
+
+        **Signals are blocked for the duration.**  ``clear()`` and
+        ``addItems()`` both emit ``currentTextChanged``, and Qt does not
+        distinguish a programmatic change from a user's click.  Without
+        the block, a refresh landing mid-session reached
+        :meth:`_on_activity_changed` with an empty string, which looks
+        exactly like a quick-switch: the running session was committed
+        and a fresh one started, resetting the monotonic anchor.  On a
+        30-second timer that chopped every session into 30-second
+        segments, each below the service's one-second minimum by the
+        time the next refresh arrived, so a long session recorded
+        nothing at all.
+
+        The selection is reconciled explicitly afterwards, which is what
+        the blocked signals would otherwise have done implicitly and
+        destructively.
+        """
         current = self._activity_combo.currentText()
-        self._activity_combo.clear()
 
-        niyam = get_active(self._conn)
-        if niyam:
-            activities = sorted(niyam.activity_set)
-            self._activity_combo.addItems(activities)
+        self._activity_combo.blockSignals(True)
+        try:
+            self._activity_combo.clear()
+            niyam = get_active(self._conn)
+            if niyam:
+                self._activity_combo.addItems(sorted(niyam.activity_set))
+            idx = self._activity_combo.findText(current)
+            if idx >= 0:
+                self._activity_combo.setCurrentIndex(idx)
+        finally:
+            self._activity_combo.blockSignals(False)
 
-        # Restore selection
-        idx = self._activity_combo.findText(current)
-        if idx >= 0:
-            self._activity_combo.setCurrentIndex(idx)
+        # If the selection survived, nothing changed and the running
+        # session must not be disturbed.  If it did not, tell the rest
+        # of the widget once, deliberately.
+        if self._activity_combo.currentText() != current:
+            self._on_activity_changed(self._activity_combo.currentText())
+        else:
+            self._refresh_tasks()
 
     def _on_activity_changed(self, activity: str) -> None:
-        """Update task dropdown when activity changes; handle quick-switch."""
+        """Handle a real activity change, including quick-switch.
+
+        An empty string is not an activity.  It arrives when the combo
+        is emptied, and treating it as one committed the running session
+        against ``activity=""`` — rejected by the service's minimum
+        duration, but only by luck; a longer segment would have written
+        a row with no activity at all.
+        """
+        if not activity:
+            return
+
         if self._is_running and self._current_activity != activity:
-            # Quick-switch: end current segment, start new one
+            # Quick-switch: end the current segment, start a new one.
             self._end_session()
             self._current_activity = activity
             self._start_session()
@@ -254,7 +290,11 @@ class StopwatchWidget(QWidget):
         cleared before the service call so a failure never leaves the
         widget believing it is still mid-session.
         """
-        if self._session_start is None or self._current_activity is None:
+        # An empty activity is not a session.  ``_current_activity``
+        # can only be "" if something set it from an emptied combo,
+        # which is the bug this guard closes rather than a state worth
+        # committing.
+        if self._session_start is None or not self._current_activity:
             return
 
         start = self._session_start

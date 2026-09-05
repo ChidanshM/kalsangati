@@ -284,3 +284,156 @@ def test_session_start_cleared_after_success(
         widget._end_session()
 
     assert widget._session_start is None
+
+
+# ── Refresh must not disturb a running session (P2U08) ───────────────
+
+
+class TestRefreshDoesNotSegmentTheSession:
+    """``_refresh_activities`` runs on a 30-second timer.
+
+    It repopulates the activity combo, and Qt emits
+    ``currentTextChanged`` on programmatic mutation exactly as it does
+    on a user's click.  Before this fix the emptied combo reached
+    ``_on_activity_changed("")``, which looked like a quick-switch:
+    the running session was committed and a new one started, resetting
+    the monotonic anchor.  A three-minute session was chopped into
+    30-second fragments, each rejected as too short, and recorded
+    nothing.
+
+    Every test here drives ``_refresh_activities`` **while running**,
+    which is the state the existing tests never put the widget in.
+    """
+
+    @staticmethod
+    def _run(widget: StopwatchWidget, activity: str = "01-02-el") -> None:
+        widget._activity_combo.blockSignals(True)
+        widget._activity_combo.clear()
+        widget._activity_combo.addItems([activity])
+        widget._activity_combo.setCurrentIndex(0)
+        widget._activity_combo.blockSignals(False)
+        widget._current_activity = activity
+        widget._is_running = True
+        widget._start_session()
+
+    def test_refresh_does_not_commit_anything(
+        self, widget: StopwatchWidget
+    ) -> None:
+        self._run(widget)
+
+        with patch(
+            "kalsangati.gui.stopwatch.commit_stopwatch_session"
+        ) as mock_commit:
+            widget._refresh_activities()
+
+        assert not mock_commit.called
+
+    def test_monotonic_anchor_survives_a_refresh(
+        self, widget: StopwatchWidget
+    ) -> None:
+        """The anchor is what makes the recorded duration correct.
+
+        Resetting it mid-session is why a three-minute session
+        committed 0.000 seconds.
+        """
+        self._run(widget)
+        anchor = widget._session_monotonic_start
+
+        with patch("kalsangati.gui.stopwatch.commit_stopwatch_session"):
+            widget._refresh_activities()
+
+        assert widget._session_monotonic_start == anchor
+
+    def test_session_start_survives_a_refresh(
+        self, widget: StopwatchWidget
+    ) -> None:
+        self._run(widget)
+        started = widget._session_start
+
+        with patch("kalsangati.gui.stopwatch.commit_stopwatch_session"):
+            widget._refresh_activities()
+
+        assert widget._session_start == started
+
+    def test_current_activity_survives_a_refresh(
+        self, widget: StopwatchWidget
+    ) -> None:
+        self._run(widget)
+
+        with patch("kalsangati.gui.stopwatch.commit_stopwatch_session"):
+            widget._refresh_activities()
+
+        assert widget._current_activity == "01-02-el"
+
+    def test_repeated_refreshes_never_commit(
+        self, widget: StopwatchWidget
+    ) -> None:
+        """Seven refreshes is roughly what a 3:30 session saw."""
+        self._run(widget)
+        anchor = widget._session_monotonic_start
+
+        with patch(
+            "kalsangati.gui.stopwatch.commit_stopwatch_session"
+        ) as mock_commit:
+            for _ in range(7):
+                widget._refresh_activities()
+
+        assert not mock_commit.called
+        assert widget._session_monotonic_start == anchor
+
+
+class TestEmptyActivityIsNotASession:
+    """An empty string is not an activity.
+
+    It arrives from an emptied combo.  Committing against it was
+    rejected by the service's one-second minimum — by luck, not by
+    design.  A longer fragment would have written a row with no
+    activity at all.
+    """
+
+    def test_empty_activity_change_is_ignored(
+        self, widget: StopwatchWidget
+    ) -> None:
+        widget._current_activity = "01-02-el"
+        widget._is_running = True
+        widget._start_session()
+
+        with patch(
+            "kalsangati.gui.stopwatch.commit_stopwatch_session"
+        ) as mock_commit:
+            widget._on_activity_changed("")
+
+        assert not mock_commit.called
+        assert widget._current_activity == "01-02-el"
+
+    def test_end_session_refuses_an_empty_activity(
+        self, widget: StopwatchWidget
+    ) -> None:
+        widget._current_activity = ""
+        widget._session_start = datetime.now() - timedelta(seconds=5)
+
+        with patch(
+            "kalsangati.gui.stopwatch.commit_stopwatch_session"
+        ) as mock_commit:
+            widget._end_session()
+
+        assert not mock_commit.called
+
+    def test_a_real_quick_switch_still_works(
+        self, widget: StopwatchWidget
+    ) -> None:
+        """The guard must not break the feature it sits next to."""
+        widget._current_activity = "01-02-el"
+        widget._is_running = True
+        widget._start_session()
+
+        with patch(
+            "kalsangati.gui.stopwatch.commit_stopwatch_session",
+            return_value=_make_commit_return(),
+        ) as mock_commit:
+            widget._on_activity_changed("04-fitness")
+
+        assert mock_commit.call_count == 1
+        assert mock_commit.call_args.kwargs["activity"] == "01-02-el"
+        assert widget._current_activity == "04-fitness"
+        assert widget._session_start is not None  # new segment running
