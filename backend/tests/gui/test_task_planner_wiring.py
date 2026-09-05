@@ -608,6 +608,9 @@ class TestEditTask:
                 "due_date": "2026-10-01",
                 "project_id": None,
             }
+            # Explicit: an unset MagicMock method returns a Mock, which
+            # is not None, which would trip the notes write path.
+            instance.notes_body.return_value = None
             planner._edit_task(t.id)
 
         fresh = get_by_id(conn, t.id)
@@ -668,6 +671,7 @@ class TestEditTask:
                 "estimated_hours": None, "due_date": None,
                 "project_id": None,
             }
+            instance.notes_body.return_value = None
             planner._edit_task(t.id)
 
         assert mock_critical.called
@@ -801,12 +805,17 @@ class TestProjectsDialog:
 # ── Notes tab (P2U07) ───────────────────────────────────────
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def notes_root(tmp_path: Path) -> Generator[Path, None, None]:
     """Redirect the notes directory into a temporary folder.
 
-    Not optional: without it these tests would write into the real
-    platform data directory, where the user's actual prose lives.
+    **autouse on purpose.**  This module's tests write real files, and a
+    test that forgets to ask for this fixture writes them into the
+    user's actual notes folder — silently, while still passing.  That
+    happened once: a test predating the notes tab patched the dialog
+    with a MagicMock, whose unset ``notes_body()`` returned a Mock
+    rather than ``None``, so the write path fired against the real
+    directory.  Making it autouse means no future test can repeat it.
     """
     from kalsangati.infrastructure import notes as notes_files
 

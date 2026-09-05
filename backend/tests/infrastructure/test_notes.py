@@ -17,12 +17,15 @@ from kalsangati.core import tasks
 from kalsangati.infrastructure import notes
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def notes_root(tmp_path: Path) -> Iterator[Path]:
     """Point the notes directory at a temporary folder.
 
-    Not optional.  Without it these tests would write into the real
-    platform data directory.
+    **autouse on purpose.**  These tests write real files.  A test that
+    forgets to request this fixture writes them into the user's actual
+    notes folder — silently, while still passing, because the write
+    itself succeeds.  autouse removes the possibility rather than
+    relying on every future test remembering.
     """
     root = tmp_path / "notes"
     original = notes.notes_directory
