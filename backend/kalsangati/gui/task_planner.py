@@ -27,12 +27,14 @@ from PyQt5.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -62,6 +64,7 @@ from kalsangati.core.tasks import (
 from kalsangati.core.tasks import (
     update as update_task,
 )
+from kalsangati.infrastructure import notes as notes_files
 from kalsangati.services.delete_task import delete_task
 from kalsangati.services.reparent_task import reparent_task
 from kalsangati.services.update_task_status import (
@@ -451,6 +454,22 @@ class TaskPlanner(QWidget):
             QMessageBox.critical(
                 self, "Unexpected error", "Check logs for details."
             )
+        else:
+            # Fields first, file second, and only if it changed.  A
+            # read-only disk must not cost the rest of the edit.
+            body = dlg.notes_body()
+            if body is not None:
+                try:
+                    notes_files.write_body(self._conn, task_id, body)
+                except OSError as e:
+                    logger.exception(
+                        "Could not write notes for task %s", task_id
+                    )
+                    QMessageBox.warning(
+                        self,
+                        "Notes not saved",
+                        f"The task was saved, but its notes were not:\n{e}",
+                    )
         finally:
             self.refresh()
 
@@ -620,7 +639,16 @@ class _TaskDialog(QDialog):
         self.setWindowTitle("Edit Task" if task else "New Task")
         self._conn = conn
         self._task = task
-        layout = QFormLayout(self)
+        self._notes_edit: QPlainTextEdit | None = None
+        self._notes_original: str = ""
+
+        outer = QVBoxLayout(self)
+        tabs = QTabWidget()
+        outer.addWidget(tabs)
+
+        fields = QWidget()
+        layout = QFormLayout(fields)
+        tabs.addTab(fields, "Details")
 
         self._title = QLineEdit()
         layout.addRow("Title:", self._title)
@@ -657,10 +685,59 @@ class _TaskDialog(QDialog):
         )
         buttons.accepted.connect(self._on_accept)
         buttons.rejected.connect(self.reject)
-        layout.addRow(buttons)
+        outer.addWidget(buttons)
 
+        # Notes need a task id to derive a path, so a task being
+        # created has nowhere to put them yet.
         if task is not None:
+            tabs.addTab(self._build_notes_tab(task), "Notes")
             self._prefill(task)
+
+    def _build_notes_tab(self, task: Task) -> QWidget:
+        """The Markdown body, loaded from disk.
+
+        A missing file is announced rather than shown as an empty box:
+        "nothing written yet" and "the file has gone" are different
+        situations and only one of them is fine.
+        """
+        page = QWidget()
+        box = QVBoxLayout(page)
+
+        body: str | None = None
+        try:
+            body = notes_files.read_body(self._conn, task.id)
+        except OSError:
+            logger.exception("Could not read notes for task %s", task.id)
+            box.addWidget(QLabel("Notes could not be read — check logs."))
+
+        if body is None:
+            path = notes_files.derive_path(self._conn, task.id)
+            box.addWidget(
+                QLabel(
+                    f"No notes file yet. It will be created at:\n{path}"
+                )
+            )
+            body = ""
+
+        self._notes_edit = QPlainTextEdit()
+        self._notes_edit.setPlainText(body)
+        font = self._notes_edit.font()
+        font.setFamily("monospace")
+        self._notes_edit.setFont(font)
+        self._notes_original = body
+        box.addWidget(self._notes_edit)
+        return page
+
+    def notes_body(self) -> str | None:
+        """The edited body, or ``None`` if it was not changed.
+
+        ``None`` means "do not write", so opening a task and closing it
+        does not rewrite a file for no reason.
+        """
+        if self._notes_edit is None:
+            return None
+        current = self._notes_edit.toPlainText()
+        return current if current != self._notes_original else None
 
     def _prefill(self, task: Task) -> None:
         """Load an existing task's values into the fields."""
