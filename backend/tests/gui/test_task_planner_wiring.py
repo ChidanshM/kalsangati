@@ -423,13 +423,68 @@ class TestNewSubtask:
         ) as mock_create:
             planner._on_add_subtask()
 
-        mock_create.assert_called_once_with(parent_id=parent.id)
+        mock_create.assert_called_once_with(
+            parent_id=parent.id,
+            initial_activity="01-02-el",
+            initial_project_id=None,
+        )
 
     def test_noop_without_selection(self, planner: TaskPlanner) -> None:
         planner.refresh()
         with patch.object(planner, "_create_task") as mock_create:
             planner._on_add_subtask()
         assert not mock_create.called
+
+    def test_subtask_inherits_project_and_activity(
+        self, planner: TaskPlanner, conn: sqlite3.Connection
+    ) -> None:
+        """A subtask is nearly always part of the same work.
+
+        Overridable in the dialog — a "buy a whiteboard" subtask under a
+        learning task should still be able to be a chore.
+        """
+        conn.execute(
+            "INSERT INTO projects (id, name, canonical_activity) "
+            "VALUES (3, 'CIS731', '01-02-el')"
+        )
+        conn.commit()
+        parent = create(conn, "Parent", "01-02-el", project_id=3)
+        planner.refresh()
+        planner._backlog_tree.setCurrentItem(
+            planner._backlog_tree.topLevelItem(0)
+        )
+
+        with patch.object(planner, "_create_task") as mock_create:
+            planner._on_add_subtask()
+
+        mock_create.assert_called_once_with(
+            parent_id=parent.id,
+            initial_activity="01-02-el",
+            initial_project_id=3,
+        )
+
+    def test_dialog_seeds_from_the_parent(
+        self, conn: sqlite3.Connection, qapp: QApplication
+    ) -> None:
+        conn.execute(
+            "INSERT INTO projects (id, name, canonical_activity) "
+            "VALUES (3, 'CIS731', '01-02-el')"
+        )
+        conn.commit()
+        dlg = _TaskDialog(
+            conn, initial_activity="01-02-el", initial_project_id=3
+        )
+        data = dlg.get_data()
+        assert data["activity"] == "01-02-el"
+        assert data["project_id"] == 3
+
+    def test_due_date_is_not_inherited(
+        self, conn: sqlite3.Connection, qapp: QApplication
+    ) -> None:
+        """A due date is a commitment about one piece of work, not a
+        description of what kind of work it is."""
+        dlg = _TaskDialog(conn, initial_activity="01-02-el")
+        assert dlg.get_data()["due_date"] is None
 
 
 # ── Task dialog: modes and validation (P2U06) ───────────────────────
